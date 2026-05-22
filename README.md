@@ -22,10 +22,22 @@ Set `DATABASE_URL` for Prisma and seed commands:
 export DATABASE_URL="postgresql://freshstack_admin:freshstack_dev_2026@localhost:5432/freshstack"
 ```
 
+For Windows PowerShell:
+
+```powershell
+$env:DATABASE_URL="postgresql://freshstack_admin:freshstack_dev_2026@localhost:5432/freshstack"
+```
+
 Apply migrations:
 
 ```bash
 npx prisma migrate dev
+```
+
+Generate the Prisma client:
+
+```bash
+npm run prisma:generate
 ```
 
 Seed the initial platform and company admin users:
@@ -45,6 +57,7 @@ Open [http://localhost:3000](http://localhost:3000). The admin index redirects t
 ## Verification
 
 ```bash
+npm run prisma:generate
 npm run build
 npm run lint
 npm run typecheck
