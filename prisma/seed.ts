@@ -67,6 +67,13 @@ const paymentMethods = [
   },
 ] as const;
 
+const inventoryLocations = [
+  {
+    code: "MAIN",
+    name: "Main Cold Room",
+  },
+] as const;
+
 async function main() {
   const password = await bcrypt.hash(seedPassword, 10);
 
@@ -139,6 +146,26 @@ async function main() {
           type: paymentMethod.type,
           name: paymentMethod.name,
           enabled: paymentMethod.enabled,
+        },
+      });
+    }
+
+    for (const location of inventoryLocations) {
+      await prisma.inventoryLocation.upsert({
+        where: {
+          companyId_code: {
+            companyId: company.id,
+            code: location.code,
+          },
+        },
+        update: {
+          name: location.name,
+          isActive: true,
+        },
+        create: {
+          companyId: company.id,
+          code: location.code,
+          name: location.name,
         },
       });
     }

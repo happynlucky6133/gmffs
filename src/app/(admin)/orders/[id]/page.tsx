@@ -1,9 +1,9 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { cancelOrder, confirmOrder } from "../actions";
+import { cancelOrder, confirmOrder, retryAllocation } from "../actions";
 import { getActiveCompany } from "@/lib/company";
 import { prisma } from "@/lib/prisma";
-import { OrderStatus } from "@/generated/prisma/client";
+import { AllocationStatus, OrderStatus } from "@/generated/prisma/client";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +34,20 @@ export default async function OrderDetailPage({
           },
         },
       },
+      inventoryReservations: {
+        include: {
+          location: true,
+          sku: true,
+        },
+        orderBy: { createdAt: "desc" },
+      },
+      allocationAttempts: {
+        include: {
+          location: true,
+        },
+        orderBy: { createdAt: "desc" },
+        take: 5,
+      },
     },
   });
 
@@ -43,6 +57,10 @@ export default async function OrderDetailPage({
 
   const canConfirm = order.orderStatus === OrderStatus.draft;
   const canCancel = order.orderStatus !== OrderStatus.cancelled;
+  const canRetryAllocation =
+    order.orderStatus === OrderStatus.confirmed &&
+    (order.allocationStatus === AllocationStatus.failed ||
+      order.allocationStatus === AllocationStatus.pending);
 
   return (
     <section className="space-y-6">
@@ -64,7 +82,15 @@ export default async function OrderDetailPage({
             <form action={confirmOrder}>
               <input type="hidden" name="id" value={order.id} />
               <button className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white">
-                Confirm
+                Confirm & Allocate
+              </button>
+            </form>
+          ) : null}
+          {canRetryAllocation ? (
+            <form action={retryAllocation}>
+              <input type="hidden" name="id" value={order.id} />
+              <button className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white">
+                Retry Allocation
               </button>
             </form>
           ) : null}
@@ -144,6 +170,78 @@ export default async function OrderDetailPage({
           </div>
         </aside>
       </div>
+
+      <div className="grid gap-6 lg:grid-cols-2">
+        <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-200 px-5 py-4">
+            <h2 className="font-semibold">Reservations</h2>
+          </div>
+          {order.inventoryReservations.length === 0 ? (
+            <p className="px-5 py-4 text-sm text-slate-600">
+              No stock reserved for this order.
+            </p>
+          ) : (
+            <table className="min-w-full divide-y divide-slate-200 text-sm">
+              <thead className="bg-slate-50 text-left text-slate-600">
+                <tr>
+                  <th className="px-5 py-3 font-medium">Location</th>
+                  <th className="px-5 py-3 font-medium">SKU</th>
+                  <th className="px-5 py-3 font-medium">Qty</th>
+                  <th className="px-5 py-3 font-medium">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {order.inventoryReservations.map((reservation) => (
+                  <tr key={reservation.id}>
+                    <td className="px-5 py-3">{reservation.location.code}</td>
+                    <td className="px-5 py-3">{reservation.sku.code}</td>
+                    <td className="px-5 py-3">
+                      {reservation.quantity.toString()}
+                    </td>
+                    <td className="px-5 py-3">{reservation.status}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+
+        <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
+          <div className="border-b border-slate-200 px-5 py-4">
+            <h2 className="font-semibold">Allocation Attempts</h2>
+          </div>
+          {order.allocationAttempts.length === 0 ? (
+            <p className="px-5 py-4 text-sm text-slate-600">
+              No allocation attempts yet.
+            </p>
+          ) : (
+            <table className="min-w-full divide-y divide-slate-200 text-sm">
+              <thead className="bg-slate-50 text-left text-slate-600">
+                <tr>
+                  <th className="px-5 py-3 font-medium">Time</th>
+                  <th className="px-5 py-3 font-medium">Location</th>
+                  <th className="px-5 py-3 font-medium">Status</th>
+                  <th className="px-5 py-3 font-medium">Reason</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-200">
+                {order.allocationAttempts.map((attempt) => (
+                  <tr key={attempt.id}>
+                    <td className="px-5 py-3">
+                      {attempt.createdAt.toLocaleString()}
+                    </td>
+                    <td className="px-5 py-3">
+                      {attempt.location?.code ?? "-"}
+                    </td>
+                    <td className="px-5 py-3">{attempt.status}</td>
+                    <td className="px-5 py-3">{attempt.reason ?? "-"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
     </section>
   );
 }
@@ -165,4 +263,3 @@ function Row({ label, value }: { label: string; value: string }) {
     </div>
   );
 }
-

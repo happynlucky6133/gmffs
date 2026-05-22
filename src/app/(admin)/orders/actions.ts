@@ -12,7 +12,11 @@ import {
   requiredString,
 } from "@/lib/form";
 import { prisma } from "@/lib/prisma";
-import { OrderStatus } from "@/generated/prisma/client";
+import {
+  cancelAndReleaseOrder,
+  confirmAndAllocateOrder,
+  retryOrderAllocation,
+} from "@/services/inventory";
 
 async function nextOrderNumber(companySlug: string) {
   const today = new Date().toISOString().slice(0, 10).replaceAll("-", "");
@@ -104,16 +108,17 @@ export async function confirmOrder(formData: FormData) {
   const company = await getActiveCompany();
   const id = requiredString(formData, "id");
 
-  await prisma.order.update({
-    where: {
-      id,
-      companyId: company.id,
-    },
-    data: {
-      orderStatus: OrderStatus.confirmed,
-      confirmedAt: new Date(),
-    },
-  });
+  await confirmAndAllocateOrder(company.id, id);
+
+  revalidatePath("/orders");
+  revalidatePath(`/orders/${id}`);
+}
+
+export async function retryAllocation(formData: FormData) {
+  const company = await getActiveCompany();
+  const id = requiredString(formData, "id");
+
+  await retryOrderAllocation(company.id, id);
 
   revalidatePath("/orders");
   revalidatePath(`/orders/${id}`);
@@ -123,16 +128,7 @@ export async function cancelOrder(formData: FormData) {
   const company = await getActiveCompany();
   const id = requiredString(formData, "id");
 
-  await prisma.order.update({
-    where: {
-      id,
-      companyId: company.id,
-    },
-    data: {
-      orderStatus: OrderStatus.cancelled,
-      cancelledAt: new Date(),
-    },
-  });
+  await cancelAndReleaseOrder(company.id, id);
 
   revalidatePath("/orders");
   revalidatePath(`/orders/${id}`);
