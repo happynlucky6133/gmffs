@@ -2,21 +2,8 @@
 
 import { revalidatePath } from "next/cache";
 import { getActiveCompany } from "@/lib/company";
+import { money, optionalString, requiredString } from "@/lib/form";
 import { prisma } from "@/lib/prisma";
-
-function requiredString(formData: FormData, key: string) {
-  const value = formData.get(key)?.toString().trim();
-
-  if (!value) {
-    throw new Error(`${key} is required`);
-  }
-
-  return value;
-}
-
-function optionalString(formData: FormData, key: string) {
-  return formData.get(key)?.toString().trim() || null;
-}
 
 function requiredPrice(formData: FormData, key: string) {
   const value = Number(formData.get(key));
@@ -25,7 +12,7 @@ function requiredPrice(formData: FormData, key: string) {
     throw new Error(`${key} must be zero or greater`);
   }
 
-  return value.toFixed(2);
+  return money(value);
 }
 
 export async function createProduct(formData: FormData) {

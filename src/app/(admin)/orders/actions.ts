@@ -3,40 +3,16 @@
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getActiveCompany } from "@/lib/company";
+import {
+  money,
+  optionalString,
+  quantity,
+  requiredNonNegativeNumber,
+  requiredPositiveNumber,
+  requiredString,
+} from "@/lib/form";
 import { prisma } from "@/lib/prisma";
 import { OrderStatus } from "@/generated/prisma/client";
-
-function requiredString(formData: FormData, key: string) {
-  const value = formData.get(key)?.toString().trim();
-
-  if (!value) {
-    throw new Error(`${key} is required`);
-  }
-
-  return value;
-}
-
-function optionalString(formData: FormData, key: string) {
-  return formData.get(key)?.toString().trim() || null;
-}
-
-function requiredPositiveNumber(formData: FormData, key: string) {
-  const value = Number(formData.get(key));
-
-  if (!Number.isFinite(value) || value <= 0) {
-    throw new Error(`${key} must be greater than zero`);
-  }
-
-  return value;
-}
-
-function money(value: number) {
-  return value.toFixed(2);
-}
-
-function quantity(value: number) {
-  return value.toFixed(3);
-}
 
 async function nextOrderNumber(companySlug: string) {
   const today = new Date().toISOString().slice(0, 10).replaceAll("-", "");
@@ -57,11 +33,7 @@ export async function createOrder(formData: FormData) {
   const skuId = requiredString(formData, "skuId");
   const itemQuantity = requiredPositiveNumber(formData, "quantity");
   const unitPrice = requiredPositiveNumber(formData, "unitPrice");
-  const deliveryFee = Number(formData.get("deliveryFee") || 0);
-
-  if (!Number.isFinite(deliveryFee) || deliveryFee < 0) {
-    throw new Error("deliveryFee must be zero or greater");
-  }
+  const deliveryFee = requiredNonNegativeNumber(formData, "deliveryFee");
 
   const orderNumber = await nextOrderNumber(company.slug);
 
