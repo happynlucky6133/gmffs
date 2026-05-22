@@ -1,6 +1,10 @@
 import bcrypt from "bcryptjs";
 import { PrismaPg } from "@prisma/adapter-pg";
-import { PrismaClient, Role } from "../src/generated/prisma/client";
+import {
+  PaymentMethodType,
+  PrismaClient,
+  Role,
+} from "../src/generated/prisma/client";
 
 const databaseUrl =
   process.env.DATABASE_URL ??
@@ -37,6 +41,29 @@ const users = [
     password: seedPassword,
     role: Role.company_admin,
     companySlug: "yc",
+  },
+] as const;
+
+const paymentMethods = [
+  {
+    type: PaymentMethodType.touch_n_go,
+    name: "Touch n Go",
+    enabled: true,
+  },
+  {
+    type: PaymentMethodType.bank_transfer,
+    name: "Bank Transfer",
+    enabled: true,
+  },
+  {
+    type: PaymentMethodType.cash_on_delivery,
+    name: "Cash on Delivery",
+    enabled: false,
+  },
+  {
+    type: PaymentMethodType.payment_link,
+    name: "Payment Link",
+    enabled: false,
   },
 ] as const;
 
@@ -88,6 +115,33 @@ async function main() {
         role: user.role,
       },
     });
+  }
+
+  for (const companySeed of companies) {
+    const company = await prisma.company.findUniqueOrThrow({
+      where: { slug: companySeed.slug },
+    });
+
+    for (const paymentMethod of paymentMethods) {
+      await prisma.paymentMethod.upsert({
+        where: {
+          companyId_type: {
+            companyId: company.id,
+            type: paymentMethod.type,
+          },
+        },
+        update: {
+          name: paymentMethod.name,
+          enabled: paymentMethod.enabled,
+        },
+        create: {
+          companyId: company.id,
+          type: paymentMethod.type,
+          name: paymentMethod.name,
+          enabled: paymentMethod.enabled,
+        },
+      });
+    }
   }
 
   const seededUsers = await prisma.user.findMany({
