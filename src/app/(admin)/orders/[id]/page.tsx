@@ -48,6 +48,16 @@ export default async function OrderDetailPage({
         orderBy: { createdAt: "desc" },
         take: 5,
       },
+      deliveries: {
+        include: {
+          location: true,
+          events: {
+            orderBy: { createdAt: "desc" },
+            take: 3,
+          },
+        },
+        orderBy: { createdAt: "desc" },
+      },
     },
   });
 
@@ -241,6 +251,52 @@ export default async function OrderDetailPage({
             </table>
           )}
         </div>
+      </div>
+
+      <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
+        <div className="border-b border-slate-200 px-5 py-4">
+          <h2 className="font-semibold">Deliveries</h2>
+        </div>
+        {order.deliveries.length === 0 ? (
+          <p className="px-5 py-4 text-sm text-slate-600">
+            No delivery jobs for this order.
+          </p>
+        ) : (
+          <table className="min-w-full divide-y divide-slate-200 text-sm">
+            <thead className="bg-slate-50 text-left text-slate-600">
+              <tr>
+                <th className="px-5 py-3 font-medium">Provider</th>
+                <th className="px-5 py-3 font-medium">Pickup</th>
+                <th className="px-5 py-3 font-medium">Quote</th>
+                <th className="px-5 py-3 font-medium">Status</th>
+                <th className="px-5 py-3 font-medium">Latest Event</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-200">
+              {order.deliveries.map((delivery) => (
+                <tr key={delivery.id}>
+                  <td className="px-5 py-3">{delivery.provider}</td>
+                  <td className="px-5 py-3">
+                    {delivery.location?.code ?? "-"}
+                  </td>
+                  <td className="px-5 py-3">
+                    {delivery.quoteAmount
+                      ? `RM ${delivery.quoteAmount.toString()}`
+                      : "-"}
+                  </td>
+                  <td className="px-5 py-3">{delivery.status}</td>
+                  <td className="px-5 py-3">
+                    {delivery.events[0]
+                      ? `${delivery.events[0].type} / ${
+                          delivery.events[0].notes ?? "-"
+                        }`
+                      : "-"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
       </div>
     </section>
   );
