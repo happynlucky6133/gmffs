@@ -1,5 +1,9 @@
 import { prisma } from "@/lib/prisma";
-import { PaymentEventType, PaymentStatus } from "@/generated/prisma/client";
+import {
+  OrderStatus,
+  PaymentEventType,
+  PaymentStatus,
+} from "@/generated/prisma/client";
 
 type CreatePaymentInput = {
   companyId: string;
@@ -39,6 +43,12 @@ export async function createManualPayment(input: CreatePaymentInput) {
       where: {
         id: input.orderId,
         companyId: input.companyId,
+        orderStatus: {
+          not: OrderStatus.cancelled,
+        },
+        paymentStatus: {
+          notIn: [PaymentStatus.paid, PaymentStatus.refunded],
+        },
       },
     });
 
@@ -98,6 +108,14 @@ export async function updatePaymentProof(input: {
   referenceNumber?: string | null;
 }) {
   return prisma.$transaction(async (tx) => {
+    await tx.payment.findFirstOrThrow({
+      where: {
+        id: input.paymentId,
+        companyId: input.companyId,
+        status: PaymentStatus.awaiting_confirmation,
+      },
+    });
+
     const payment = await tx.payment.update({
       where: { id: input.paymentId, companyId: input.companyId },
       data: {
@@ -120,6 +138,14 @@ export async function updatePaymentProof(input: {
 
 export async function confirmPayment(input: PaymentTransitionInput) {
   return prisma.$transaction(async (tx) => {
+    await tx.payment.findFirstOrThrow({
+      where: {
+        id: input.paymentId,
+        companyId: input.companyId,
+        status: PaymentStatus.awaiting_confirmation,
+      },
+    });
+
     const payment = await tx.payment.update({
       where: { id: input.paymentId, companyId: input.companyId },
       data: {
@@ -147,6 +173,14 @@ export async function confirmPayment(input: PaymentTransitionInput) {
 
 export async function failPayment(input: PaymentTransitionInput) {
   return prisma.$transaction(async (tx) => {
+    await tx.payment.findFirstOrThrow({
+      where: {
+        id: input.paymentId,
+        companyId: input.companyId,
+        status: PaymentStatus.awaiting_confirmation,
+      },
+    });
+
     const payment = await tx.payment.update({
       where: { id: input.paymentId, companyId: input.companyId },
       data: {
@@ -162,11 +196,22 @@ export async function failPayment(input: PaymentTransitionInput) {
         status: PaymentStatus.paid,
       },
     });
+    const awaitingPayment = await tx.payment.findFirst({
+      where: {
+        companyId: input.companyId,
+        orderId: payment.orderId,
+        status: PaymentStatus.awaiting_confirmation,
+      },
+    });
 
     if (!paidPayment) {
       await tx.order.update({
         where: { id: payment.orderId, companyId: input.companyId },
-        data: { paymentStatus: PaymentStatus.failed },
+        data: {
+          paymentStatus: awaitingPayment
+            ? PaymentStatus.awaiting_confirmation
+            : PaymentStatus.failed,
+        },
       });
     }
 
@@ -184,6 +229,14 @@ export async function failPayment(input: PaymentTransitionInput) {
 
 export async function markRefundRequired(input: PaymentTransitionInput) {
   return prisma.$transaction(async (tx) => {
+    await tx.payment.findFirstOrThrow({
+      where: {
+        id: input.paymentId,
+        companyId: input.companyId,
+        status: PaymentStatus.paid,
+      },
+    });
+
     const payment = await tx.payment.update({
       where: { id: input.paymentId, companyId: input.companyId },
       data: { status: PaymentStatus.refund_required },
@@ -208,6 +261,14 @@ export async function markRefundRequired(input: PaymentTransitionInput) {
 
 export async function markRefunded(input: PaymentTransitionInput) {
   return prisma.$transaction(async (tx) => {
+    await tx.payment.findFirstOrThrow({
+      where: {
+        id: input.paymentId,
+        companyId: input.companyId,
+        status: PaymentStatus.refund_required,
+      },
+    });
+
     const payment = await tx.payment.update({
       where: { id: input.paymentId, companyId: input.companyId },
       data: {
@@ -236,4 +297,3 @@ export async function markRefunded(input: PaymentTransitionInput) {
 type TransactionClient = Parameters<
   Parameters<typeof prisma.$transaction>[0]
 >[0];
-

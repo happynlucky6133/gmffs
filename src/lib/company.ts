@@ -1,8 +1,8 @@
 import { prisma } from "@/lib/prisma";
 
-// Temporary Step 1-4 company context. Replace this with session-based company
+// Temporary Phase 1 company context. Replace this with session-based company
 // access before exposing multiple companies in production.
-const DEFAULT_COMPANY_SLUG = "gm";
+const DEFAULT_COMPANY_SLUG = process.env.DEFAULT_COMPANY_SLUG ?? "gm";
 
 export async function getActiveCompany() {
   return prisma.company.findUniqueOrThrow({

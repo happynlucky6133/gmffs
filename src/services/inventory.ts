@@ -24,6 +24,14 @@ export async function confirmAndAllocateOrder(
   orderId: string,
 ): Promise<AllocationResult> {
   return prisma.$transaction(async (tx) => {
+    await tx.order.findFirstOrThrow({
+      where: {
+        id: orderId,
+        companyId,
+        orderStatus: OrderStatus.draft,
+      },
+    });
+
     const order = await tx.order.update({
       where: { id: orderId, companyId },
       data: {
@@ -58,6 +66,19 @@ export async function retryOrderAllocation(
 
 export async function cancelAndReleaseOrder(companyId: string, orderId: string) {
   return prisma.$transaction(async (tx) => {
+    await tx.order.findFirstOrThrow({
+      where: {
+        id: orderId,
+        companyId,
+        orderStatus: {
+          not: OrderStatus.cancelled,
+        },
+        fulfillmentStatus: {
+          not: FulfillmentStatus.completed,
+        },
+      },
+    });
+
     await releaseOrderAllocationInTransaction(tx, companyId, orderId);
 
     await tx.order.update({
