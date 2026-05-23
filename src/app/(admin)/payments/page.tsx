@@ -245,6 +245,29 @@ export default async function PaymentsPage({ searchParams }: PaymentsPageProps) 
                     Save Proof
                   </button>
                 </form>
+                {payment.proofUrl ? (
+                  <div className="mt-4 grid gap-3 rounded-md border border-slate-200 bg-slate-50 p-3 md:grid-cols-[180px_1fr]">
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                      src={payment.proofUrl}
+                      alt="Payment proof"
+                      className="max-h-48 w-full rounded-md object-contain"
+                    />
+                    <div className="text-sm">
+                      <p className="font-medium text-slate-950">
+                        Customer payment proof
+                      </p>
+                      <a
+                        href={payment.proofUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="mt-2 block font-medium text-blue-600"
+                      >
+                        Open full screenshot
+                      </a>
+                    </div>
+                  </div>
+                ) : null}
 
                 <div className="mt-3 flex flex-wrap gap-2">
                   <PaymentAction

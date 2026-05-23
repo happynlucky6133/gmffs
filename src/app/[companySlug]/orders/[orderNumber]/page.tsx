@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { submitPaymentProof } from "./actions";
 import { CompanyStatus } from "@/generated/prisma/client";
 import { prisma } from "@/lib/prisma";
 
@@ -68,6 +69,12 @@ export default async function CustomerOrderStatusPage({
     orderBy: { name: "asc" },
   });
   const latestDelivery = order.deliveries[0];
+  const latestPayment = order.payments[0];
+  const paymentProofAction = submitPaymentProof.bind(
+    null,
+    company.slug,
+    order.orderNumber,
+  );
 
   return (
     <section className="mx-auto min-h-screen w-full max-w-md bg-white px-4 py-4 sm:max-w-2xl sm:px-6 lg:max-w-4xl">
@@ -110,8 +117,8 @@ export default async function CustomerOrderStatusPage({
                     </p>
                     <p className="mt-1 text-slate-500">{item.sku.code}</p>
                   </div>
-                  <div className="md:text-right">
-                    <p>
+                  <div className="text-slate-700 md:text-right">
+                    <p className="font-medium">
                       {item.quantity.toString()} x RM{" "}
                       {item.unitPrice.toString()}
                     </p>
@@ -130,6 +137,59 @@ export default async function CustomerOrderStatusPage({
               Please pay with Touch & Go or bank transfer, then keep your
               screenshot for confirmation.
             </p>
+            <form
+              action={paymentProofAction}
+              className="mt-4 space-y-3 rounded-md border border-slate-200 bg-slate-50 p-4"
+            >
+              <label className="block text-sm font-medium text-slate-700">
+                Touch & Go Screenshot
+                <input
+                  name="proof"
+                  required={!latestPayment?.proofUrl}
+                  type="file"
+                  accept="image/jpeg,image/png,image/webp"
+                  className="mt-1 w-full rounded-md border border-slate-300 bg-white px-3 py-3 text-sm"
+                />
+              </label>
+              <label className="block text-sm font-medium text-slate-700">
+                Reference Number
+                <input
+                  name="referenceNumber"
+                  defaultValue={latestPayment?.referenceNumber ?? ""}
+                  placeholder="Optional"
+                  className="mt-1 h-12 w-full rounded-md border border-slate-300 px-3 text-base"
+                />
+              </label>
+              <button className="h-12 w-full rounded-md bg-blue-600 px-4 text-base font-semibold text-white">
+                Submit Payment Proof
+              </button>
+              {latestPayment ? (
+                <p className="text-xs leading-5 text-slate-500">
+                  Current payment status: {formatStatus(latestPayment.status)}
+                </p>
+              ) : null}
+            </form>
+            {latestPayment?.proofUrl ? (
+              <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-3">
+                <p className="text-sm font-medium text-slate-950">
+                  Uploaded Screenshot
+                </p>
+                <a
+                  href={latestPayment.proofUrl}
+                  className="mt-1 block text-sm font-medium text-blue-600"
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  View proof
+                </a>
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={latestPayment.proofUrl}
+                  alt="Payment proof"
+                  className="mt-3 max-h-80 w-full rounded-md object-contain"
+                />
+              </div>
+            ) : null}
             <div className="mt-4 space-y-3">
               {paymentMethods.length === 0 ? (
                 <p className="text-sm text-slate-600">
