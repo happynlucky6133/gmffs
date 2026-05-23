@@ -74,6 +74,57 @@ const inventoryLocations = [
   },
 ] as const;
 
+const gmFruitProducts = [
+  {
+    code: "FRUIT-MANGO",
+    name: "Mango Cup",
+    description: "Fresh cut mango cup.",
+    imageUrl: "/products/fruit1.jpeg",
+  },
+  {
+    code: "FRUIT-DRAGON-BLUEBERRY",
+    name: "Dragon Fruit Blueberry Cup",
+    description: "Red dragon fruit with blueberries.",
+    imageUrl: "/products/fruit2.jpeg",
+  },
+  {
+    code: "FRUIT-GREEN-KIWI",
+    name: "Green Kiwi Cup",
+    description: "Fresh sliced green kiwi.",
+    imageUrl: "/products/fruit3.jpeg",
+  },
+  {
+    code: "FRUIT-MANGO-BLUEBERRY",
+    name: "Mango Blueberry Cup",
+    description: "Fresh mango with blueberries.",
+    imageUrl: "/products/fruit4.jpeg",
+  },
+  {
+    code: "FRUIT-MELON-TOMATO",
+    name: "Melon Tomato Cup",
+    description: "Fresh melon with cherry tomatoes.",
+    imageUrl: "/products/fruit5.jpeg",
+  },
+  {
+    code: "FRUIT-GOLDEN-KIWI",
+    name: "Golden Kiwi Cup",
+    description: "Fresh sliced golden kiwi.",
+    imageUrl: "/products/fruit6.jpeg",
+  },
+  {
+    code: "FRUIT-ORANGE",
+    name: "Orange Cup",
+    description: "Fresh orange slices.",
+    imageUrl: "/products/fruit7.jpeg",
+  },
+  {
+    code: "FRUIT-HONEYDEW",
+    name: "Honeydew Cup",
+    description: "Fresh honeydew cubes.",
+    imageUrl: "/products/fruit8.jpeg",
+  },
+] as const;
+
 async function main() {
   const password = await bcrypt.hash(seedPassword, 10);
 
@@ -168,6 +219,59 @@ async function main() {
           name: location.name,
         },
       });
+    }
+
+    if (company.slug === "gm") {
+      for (const fruit of gmFruitProducts) {
+        const existingProduct = await prisma.product.findFirst({
+          where: {
+            companyId: company.id,
+            name: fruit.name,
+          },
+        });
+
+        const product = existingProduct
+          ? await prisma.product.update({
+              where: { id: existingProduct.id },
+              data: {
+                description: fruit.description,
+                imageUrl: fruit.imageUrl,
+                isActive: true,
+              },
+            })
+          : await prisma.product.create({
+              data: {
+                companyId: company.id,
+                name: fruit.name,
+                description: fruit.description,
+                imageUrl: fruit.imageUrl,
+              },
+            });
+
+        await prisma.sku.upsert({
+          where: {
+            companyId_code: {
+              companyId: company.id,
+              code: fruit.code,
+            },
+          },
+          update: {
+            productId: product.id,
+            name: fruit.name,
+            unit: "cup",
+            price: "8.00",
+            isActive: true,
+          },
+          create: {
+            companyId: company.id,
+            productId: product.id,
+            code: fruit.code,
+            name: fruit.name,
+            unit: "cup",
+            price: "8.00",
+          },
+        });
+      }
     }
   }
 

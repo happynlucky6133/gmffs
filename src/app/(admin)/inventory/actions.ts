@@ -30,6 +30,7 @@ export async function createProduct(formData: FormData) {
       companyId: company.id,
       name: requiredString(formData, "name"),
       description: optionalString(formData, "description"),
+      imageUrl: optionalString(formData, "imageUrl"),
     },
   });
 
@@ -45,6 +46,7 @@ export async function updateProduct(formData: FormData) {
     data: {
       name: requiredString(formData, "name"),
       description: optionalString(formData, "description"),
+      imageUrl: optionalString(formData, "imageUrl"),
     },
   });
 

@@ -84,6 +84,14 @@ export default async function CustomerOrderPage({
                 key={product.id}
                 className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm"
               >
+                {product.imageUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={product.imageUrl}
+                    alt={product.name}
+                    className="mb-4 h-64 w-full rounded-md object-cover"
+                  />
+                ) : null}
                 <div className="flex flex-col gap-2 border-b border-slate-200 pb-4">
                   <h2 className="text-lg font-semibold text-slate-950">
                     {product.name}
