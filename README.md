@@ -49,6 +49,20 @@ npm run dev
 
 Open [http://localhost:3000](http://localhost:3000). The admin index redirects to `/dashboard`.
 
+On this Windows workstation, PostgreSQL binaries and the local data directory are kept at:
+
+- `C:\tmp\pgsql`
+- `C:\tmp\freshstack-pgdata`
+
+Use the helper scripts for local acceptance testing:
+
+```bat
+start-local.bat
+stop-local.bat
+```
+
+`start-local.bat` starts PostgreSQL if needed, then starts the Next.js dev server.
+
 Seeded admin users use `Admin@12345`:
 
 - `admin@freshstack.cc`
