@@ -51,15 +51,15 @@ export default async function TrackOrderPage({
       : null;
 
   return (
-    <section className="mx-auto min-h-screen w-full max-w-3xl px-4 py-6 sm:px-6 lg:px-8">
-      <header className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+    <section className="mx-auto min-h-screen w-full max-w-md bg-white px-4 py-4 sm:max-w-2xl sm:px-6">
+      <header className="border-b border-slate-200 pb-4">
         <Link
           href={`/${company.slug}`}
           className="text-sm font-medium text-blue-600"
         >
           Back to ordering
         </Link>
-        <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">
+        <h1 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">
           Track Order
         </h1>
         <p className="mt-2 text-sm text-slate-600">
@@ -67,14 +67,14 @@ export default async function TrackOrderPage({
         </p>
       </header>
 
-      <form className="mt-6 grid gap-4 rounded-lg border border-slate-200 bg-white p-5 shadow-sm md:grid-cols-[1fr_1fr_auto]">
+      <form className="mt-5 grid gap-4 rounded-lg border border-slate-200 bg-slate-50 p-4 sm:grid-cols-[1fr_1fr]">
         <label className="block text-sm font-medium text-slate-700">
           Order Number
           <input
             name="orderNumber"
             defaultValue={cleanOrderNumber ?? ""}
             required
-            className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+            className="mt-1 h-12 w-full rounded-md border border-slate-300 px-3 text-base"
           />
         </label>
         <label className="block text-sm font-medium text-slate-700">
@@ -84,17 +84,18 @@ export default async function TrackOrderPage({
             defaultValue={cleanPhone ?? ""}
             required
             inputMode="tel"
-            className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
+            autoComplete="tel"
+            className="mt-1 h-12 w-full rounded-md border border-slate-300 px-3 text-base"
           />
         </label>
-        <button className="self-end rounded-md bg-blue-600 px-4 py-2 text-sm font-semibold text-white">
+        <button className="h-12 rounded-md bg-blue-600 px-4 text-base font-semibold text-white sm:col-span-2">
           Track
         </button>
       </form>
 
       {cleanOrderNumber && cleanPhone ? (
         order ? (
-          <div className="mt-6 rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="mt-5 rounded-lg border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
               <div>
                 <p className="text-sm text-slate-500">Order</p>
@@ -109,14 +110,14 @@ export default async function TrackOrderPage({
                 RM {order.total.toString()}
               </p>
             </div>
-            <div className="mt-5 grid gap-3 md:grid-cols-3">
-              <StatusCard label="Order" value={order.orderStatus} />
-              <StatusCard label="Payment" value={order.paymentStatus} />
-              <StatusCard label="Delivery" value={order.deliveryStatus} />
+            <div className="mt-5 grid gap-3 sm:grid-cols-3">
+              <StatusCard label="Order" value={formatStatus(order.orderStatus)} />
+              <StatusCard label="Payment" value={formatStatus(order.paymentStatus)} />
+              <StatusCard label="Delivery" value={formatStatus(order.deliveryStatus)} />
             </div>
           </div>
         ) : (
-          <div className="mt-6 rounded-lg border border-slate-200 bg-white p-5 text-sm text-slate-600 shadow-sm">
+          <div className="mt-5 rounded-lg border border-slate-200 bg-white p-4 text-sm text-slate-600 shadow-sm">
             No matching order found. Please check the order number and phone.
           </div>
         )
@@ -132,4 +133,11 @@ function StatusCard({ label, value }: { label: string; value: string }) {
       <p className="mt-2 font-semibold text-slate-950">{value}</p>
     </div>
   );
+}
+
+function formatStatus(value: string) {
+  return value
+    .split("_")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
 }

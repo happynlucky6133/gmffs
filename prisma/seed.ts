@@ -123,7 +123,10 @@ const gmFruitProducts = [
     description: "Fresh honeydew cubes.",
     imageUrl: "/products/fruit8.jpeg",
   },
-] as const;
+].map((fruit, index) => ({
+  ...fruit,
+  displayOrder: (index + 1) * 10,
+}));
 
 async function main() {
   const password = await bcrypt.hash(seedPassword, 10);
@@ -236,6 +239,7 @@ async function main() {
               data: {
                 description: fruit.description,
                 imageUrl: fruit.imageUrl,
+                displayOrder: fruit.displayOrder,
                 isActive: true,
               },
             })
@@ -245,6 +249,7 @@ async function main() {
                 name: fruit.name,
                 description: fruit.description,
                 imageUrl: fruit.imageUrl,
+                displayOrder: fruit.displayOrder,
               },
             });
 

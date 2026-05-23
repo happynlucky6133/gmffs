@@ -70,15 +70,15 @@ export default async function CustomerOrderStatusPage({
   const latestDelivery = order.deliveries[0];
 
   return (
-    <section className="mx-auto min-h-screen w-full max-w-4xl px-4 py-6 sm:px-6 lg:px-8">
-      <header className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+    <section className="mx-auto min-h-screen w-full max-w-md bg-white px-4 py-4 sm:max-w-2xl sm:px-6 lg:max-w-4xl">
+      <header className="border-b border-slate-200 pb-4">
         <Link
           href={`/${company.slug}`}
           className="text-sm font-medium text-blue-600"
         >
           Back to ordering
         </Link>
-        <h1 className="mt-3 text-3xl font-semibold tracking-tight text-slate-950">
+        <h1 className="mt-3 text-2xl font-semibold tracking-tight text-slate-950">
           Order {order.orderNumber}
         </h1>
         <p className="mt-2 text-sm text-slate-600">
@@ -86,13 +86,13 @@ export default async function CustomerOrderStatusPage({
         </p>
       </header>
 
-      <div className="mt-6 grid gap-4 md:grid-cols-3">
-        <StatusCard label="Order" value={order.orderStatus} />
-        <StatusCard label="Payment" value={order.paymentStatus} />
-        <StatusCard label="Delivery" value={order.deliveryStatus} />
+      <div className="mt-5 grid gap-3 sm:grid-cols-3">
+        <StatusCard label="Order" value={formatStatus(order.orderStatus)} />
+        <StatusCard label="Payment" value={formatStatus(order.paymentStatus)} />
+        <StatusCard label="Delivery" value={formatStatus(order.deliveryStatus)} />
       </div>
 
-      <div className="mt-6 grid gap-6 lg:grid-cols-[1fr_320px]">
+      <div className="mt-5 grid gap-5 lg:grid-cols-[1fr_320px]">
         <div className="space-y-6">
           <div className="rounded-lg border border-slate-200 bg-white shadow-sm">
             <div className="border-b border-slate-200 px-5 py-4">
@@ -111,7 +111,10 @@ export default async function CustomerOrderStatusPage({
                     <p className="mt-1 text-slate-500">{item.sku.code}</p>
                   </div>
                   <div className="md:text-right">
-                    <p>{item.quantity.toString()} x RM {item.unitPrice.toString()}</p>
+                    <p>
+                      {item.quantity.toString()} x RM{" "}
+                      {item.unitPrice.toString()}
+                    </p>
                     <p className="mt-1 font-medium">
                       RM {item.lineTotal.toString()}
                     </p>
@@ -121,7 +124,7 @@ export default async function CustomerOrderStatusPage({
             </div>
           </div>
 
-          <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
             <h2 className="font-semibold text-slate-950">Payment</h2>
             <p className="mt-2 text-sm text-slate-600">
               Please pay with Touch & Go or bank transfer, then keep your
@@ -153,7 +156,7 @@ export default async function CustomerOrderStatusPage({
             </div>
           </div>
 
-          <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
             <h2 className="font-semibold text-slate-950">Delivery Tracking</h2>
             <p className="mt-2 text-sm text-slate-600">
               Delivery tracking will appear here after the team arranges
@@ -161,7 +164,7 @@ export default async function CustomerOrderStatusPage({
             </p>
             <div className="mt-4 rounded-md border border-slate-200 bg-slate-50 p-4 text-sm">
               <p className="font-medium text-slate-950">
-                {latestDelivery ? latestDelivery.status : "Preparing"}
+                {latestDelivery ? formatStatus(latestDelivery.status) : "Preparing"}
               </p>
               <p className="mt-1 text-slate-600">
                 Lalamove driver and live delivery status will be shown here
@@ -177,7 +180,7 @@ export default async function CustomerOrderStatusPage({
         </div>
 
         <aside className="space-y-4">
-          <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
             <h2 className="font-semibold text-slate-950">Total</h2>
             <dl className="mt-4 space-y-2 text-sm">
               <Row label="Subtotal" value={`RM ${order.subtotal.toString()}`} />
@@ -189,7 +192,7 @@ export default async function CustomerOrderStatusPage({
             </dl>
           </div>
 
-          <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
             <h2 className="font-semibold text-slate-950">Customer</h2>
             <dl className="mt-4 space-y-2 text-sm">
               <Row label="Name" value={order.customer.name} />
@@ -198,7 +201,7 @@ export default async function CustomerOrderStatusPage({
             </dl>
           </div>
 
-          <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="rounded-lg border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
             <h2 className="font-semibold text-slate-950">Address</h2>
             <p className="mt-3 text-sm leading-6 text-slate-600">
               {order.deliveryAddress}
@@ -231,4 +234,11 @@ function Row({ label, value }: { label: string; value: string }) {
       <dd className="text-right font-medium text-slate-900">{value}</dd>
     </div>
   );
+}
+
+function formatStatus(value: string) {
+  return value
+    .split("_")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
 }

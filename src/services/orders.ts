@@ -1,4 +1,4 @@
-import { CompanyStatus } from "@/generated/prisma/client";
+import { CompanyStatus, OrderStatus } from "@/generated/prisma/client";
 import { money, quantity } from "@/lib/form";
 import { prisma } from "@/lib/prisma";
 
@@ -64,7 +64,7 @@ export async function createCustomerPortalOrder(
         });
 
     const subtotal = input.itemQuantity * Number(sku.price);
-    const orderNumber = await nextOrderNumber(company.id, company.slug);
+    const orderNumber = nextOrderNumber(company.slug);
 
     return tx.order.create({
       data: {
@@ -74,6 +74,7 @@ export async function createCustomerPortalOrder(
         sourceChannel: "customer_portal",
         deliveryAddress: input.deliveryAddress,
         requestedTimeSlot: input.requestedTimeSlot,
+        orderStatus: OrderStatus.confirmed,
         subtotal: money(subtotal),
         deliveryFee: money(0),
         total: money(subtotal),
@@ -91,17 +92,11 @@ export async function createCustomerPortalOrder(
   });
 }
 
-async function nextOrderNumber(companyId: string, companySlug: string) {
-  const today = new Date().toISOString().slice(0, 10).replaceAll("-", "");
-  const prefix = `${companySlug.toUpperCase()}-${today}`;
-  const count = await prisma.order.count({
-    where: {
-      companyId,
-      orderNumber: {
-        startsWith: prefix,
-      },
-    },
-  });
+function nextOrderNumber(companySlug: string) {
+  const now = new Date();
+  const date = now.toISOString().slice(0, 10).replaceAll("-", "");
+  const time = now.toISOString().slice(11, 19).replaceAll(":", "");
+  const random = Math.random().toString(36).slice(2, 6).toUpperCase();
 
-  return `${prefix}-${String(count + 1).padStart(4, "0")}`;
+  return `${companySlug.toUpperCase()}-${date}-${time}-${random}`;
 }

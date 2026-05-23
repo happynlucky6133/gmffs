@@ -29,7 +29,7 @@ export default async function CustomerOrderPage({
             orderBy: { code: "asc" },
           },
         },
-        orderBy: { name: "asc" },
+        orderBy: [{ displayOrder: "asc" }, { name: "asc" }],
       },
     },
   });
