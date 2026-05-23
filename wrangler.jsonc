@@ -4,6 +4,19 @@
   "main": ".open-next/worker.js",
   "compatibility_date": "2026-05-23",
   "compatibility_flags": ["nodejs_compat"],
+  "find_additional_modules": true,
+  "rules": [
+    {
+      "type": "Data",
+      "globs": ["server-functions/default/static/wasm/*.wasm"],
+      "fallthrough": true
+    },
+    {
+      "type": "CompiledWasm",
+      "globs": ["server-functions/default/src/generated/prisma/internal/*.wasm"],
+      "fallthrough": true
+    }
+  ],
   "assets": {
     "directory": ".open-next/assets",
     "binding": "ASSETS"
