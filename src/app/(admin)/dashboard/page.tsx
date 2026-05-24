@@ -1,146 +1,34 @@
 import Link from "next/link";
 import type { ReactNode } from "react";
-import {
-  AllocationStatus,
-  DeliveryStatus,
-  PaymentStatus,
-  ProductionTaskStatus,
-} from "@/generated/prisma/client";
 import { getActiveCompany } from "@/lib/company";
-import { prisma } from "@/lib/prisma";
+import { getAdminDashboard } from "@/services/admin-queries";
 
 export const dynamic = "force-dynamic";
 
 export default async function DashboardPage() {
   const company = await getActiveCompany();
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-
-  const [
-    ordersToday,
-    pendingPaymentOrders,
-    pendingPaymentTotal,
-    allocationFailedOrders,
-    openProductionTasks,
-    activeDeliveries,
-    recentOrders,
-    paymentQueue,
-    productionQueue,
-    deliveryQueue,
-  ] = await Promise.all([
-    prisma.order.count({
-      where: {
-        companyId: company.id,
-        createdAt: {
-          gte: today,
-        },
-      },
-    }),
-    prisma.order.count({
-      where: {
-        companyId: company.id,
-        paymentStatus: PaymentStatus.awaiting_confirmation,
-      },
-    }),
-    prisma.order.aggregate({
-      where: {
-        companyId: company.id,
-        paymentStatus: PaymentStatus.awaiting_confirmation,
-      },
-      _sum: {
-        total: true,
-      },
-    }),
-    prisma.order.count({
-      where: {
-        companyId: company.id,
-        allocationStatus: AllocationStatus.failed,
-      },
-    }),
-    prisma.productionTask.count({
-      where: {
-        companyId: company.id,
-        status: {
-          in: [ProductionTaskStatus.pending, ProductionTaskStatus.in_progress],
-        },
-      },
-    }),
-    prisma.delivery.count({
-      where: {
-        companyId: company.id,
-        status: {
-          in: [DeliveryStatus.booked, DeliveryStatus.picked_up],
-        },
-      },
-    }),
-    prisma.order.findMany({
-      where: { companyId: company.id },
-      include: { customer: true },
-      orderBy: { createdAt: "desc" },
-      take: 8,
-    }),
-    prisma.order.findMany({
-      where: {
-        companyId: company.id,
-        paymentStatus: PaymentStatus.awaiting_confirmation,
-      },
-      include: { customer: true },
-      orderBy: { createdAt: "asc" },
-      take: 5,
-    }),
-    prisma.order.findMany({
-      where: {
-        companyId: company.id,
-        allocationStatus: AllocationStatus.failed,
-      },
-      include: { customer: true },
-      orderBy: { createdAt: "asc" },
-      take: 5,
-    }),
-    prisma.delivery.findMany({
-      where: {
-        companyId: company.id,
-        status: {
-          in: [
-            DeliveryStatus.pending_quote,
-            DeliveryStatus.quoted,
-            DeliveryStatus.booked,
-            DeliveryStatus.picked_up,
-          ],
-        },
-      },
-      include: {
-        order: {
-          include: {
-            customer: true,
-          },
-        },
-      },
-      orderBy: { createdAt: "asc" },
-      take: 5,
-    }),
-  ]);
+  const dashboard = await getAdminDashboard(company.id);
 
   const metrics = [
     {
       label: "Orders Today",
-      value: ordersToday.toString(),
+      value: dashboard.ordersToday.toString(),
       href: "/orders",
     },
     {
       label: "Pending Payments",
-      value: pendingPaymentOrders.toString(),
-      detail: `RM ${pendingPaymentTotal._sum.total?.toString() ?? "0.00"}`,
+      value: dashboard.pendingPaymentOrders.toString(),
+      detail: `RM ${dashboard.pendingPaymentTotal}`,
       href: "/payments",
     },
     {
       label: "Need Production",
-      value: allocationFailedOrders.toString(),
+      value: dashboard.allocationFailedOrders.toString(),
       href: "/production",
     },
     {
       label: "Active Deliveries",
-      value: activeDeliveries.toString(),
+      value: dashboard.activeDeliveries.toString(),
       href: "/deliveries",
     },
   ];
@@ -176,15 +64,15 @@ export default async function DashboardPage() {
 
       <div className="grid gap-6 xl:grid-cols-3">
         <QueuePanel title="Payment Queue" href="/payments">
-          {paymentQueue.length === 0 ? (
+          {dashboard.paymentQueue.length === 0 ? (
             <EmptyQueue />
           ) : (
-            paymentQueue.map((order) => (
+            dashboard.paymentQueue.map((order) => (
               <QueueRow
                 key={order.id}
                 href={`/orders/${order.id}`}
                 title={order.orderNumber}
-                meta={`${order.customer.name} / RM ${order.total.toString()}`}
+                meta={`${order.customerName} / RM ${order.total}`}
                 status={order.paymentStatus}
               />
             ))
@@ -192,15 +80,15 @@ export default async function DashboardPage() {
         </QueuePanel>
 
         <QueuePanel title="Production Queue" href="/production">
-          {productionQueue.length === 0 ? (
+          {dashboard.productionQueue.length === 0 ? (
             <EmptyQueue />
           ) : (
-            productionQueue.map((order) => (
+            dashboard.productionQueue.map((order) => (
               <QueueRow
                 key={order.id}
                 href={`/orders/${order.id}`}
                 title={order.orderNumber}
-                meta={`${order.customer.name} / ${order.fulfillmentStatus}`}
+                meta={`${order.customerName} / ${order.fulfillmentStatus}`}
                 status={order.allocationStatus}
               />
             ))
@@ -208,15 +96,15 @@ export default async function DashboardPage() {
         </QueuePanel>
 
         <QueuePanel title="Delivery Queue" href="/deliveries">
-          {deliveryQueue.length === 0 ? (
+          {dashboard.deliveryQueue.length === 0 ? (
             <EmptyQueue />
           ) : (
-            deliveryQueue.map((delivery) => (
+            dashboard.deliveryQueue.map((delivery) => (
               <QueueRow
                 key={delivery.id}
                 href={`/orders/${delivery.orderId}`}
-                title={delivery.order.orderNumber}
-                meta={`${delivery.order.customer.name} / ${
+                title={delivery.orderNumber}
+                meta={`${delivery.customerName} / ${
                   delivery.scheduledAt?.toLocaleString() ?? "unscheduled"
                 }`}
                 status={delivery.status}
@@ -233,7 +121,7 @@ export default async function DashboardPage() {
             View all
           </Link>
         </div>
-        {recentOrders.length === 0 ? (
+        {dashboard.recentOrders.length === 0 ? (
           <p className="px-5 py-4 text-sm text-slate-600">No orders yet.</p>
         ) : (
           <div className="overflow-x-auto">
@@ -249,7 +137,7 @@ export default async function DashboardPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {recentOrders.map((order) => (
+                {dashboard.recentOrders.map((order) => (
                   <tr key={order.id}>
                     <td className="px-5 py-3">
                       <Link
@@ -259,8 +147,8 @@ export default async function DashboardPage() {
                         {order.orderNumber}
                       </Link>
                     </td>
-                    <td className="px-5 py-3">{order.customer.name}</td>
-                    <td className="px-5 py-3">RM {order.total.toString()}</td>
+                    <td className="px-5 py-3">{order.customerName}</td>
+                    <td className="px-5 py-3">RM {order.total}</td>
                     <td className="px-5 py-3">{order.paymentStatus}</td>
                     <td className="px-5 py-3">{order.allocationStatus}</td>
                     <td className="px-5 py-3">{order.deliveryStatus}</td>
@@ -275,7 +163,7 @@ export default async function DashboardPage() {
       <div className="rounded-lg border border-slate-200 bg-white p-5 shadow-sm">
         <h2 className="font-semibold">Production Load</h2>
         <p className="mt-3 text-3xl font-semibold text-slate-950">
-          {openProductionTasks}
+          {dashboard.openProductionTasks}
         </p>
         <p className="mt-2 text-sm text-slate-600">
           Open production tasks across pending and in-progress work.

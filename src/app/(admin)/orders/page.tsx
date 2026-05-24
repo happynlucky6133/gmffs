@@ -1,36 +1,13 @@
 import Link from "next/link";
 import { createOrder } from "./actions";
 import { getActiveCompany } from "@/lib/company";
-import { prisma } from "@/lib/prisma";
+import { getAdminOrders } from "@/services/admin-queries";
 
 export const dynamic = "force-dynamic";
 
 export default async function OrdersPage() {
   const company = await getActiveCompany();
-  const [orders, customers, skus] = await Promise.all([
-    prisma.order.findMany({
-      where: { companyId: company.id },
-      include: {
-        customer: true,
-        items: {
-          include: {
-            sku: true,
-          },
-        },
-      },
-      orderBy: { createdAt: "desc" },
-      take: 50,
-    }),
-    prisma.customer.findMany({
-      where: { companyId: company.id },
-      orderBy: { name: "asc" },
-    }),
-    prisma.sku.findMany({
-      where: { companyId: company.id, isActive: true },
-      include: { product: true },
-      orderBy: [{ product: { name: "asc" } }, { code: "asc" }],
-    }),
-  ]);
+  const { orders, customers, skus } = await getAdminOrders(company.id);
 
   return (
     <section className="space-y-8">
@@ -56,8 +33,7 @@ export default async function OrdersPage() {
               <option value="">Create new customer</option>
               {customers.map((customer) => (
                 <option key={customer.id} value={customer.id}>
-                  {customer.name}
-                  {customer.phone ? ` - ${customer.phone}` : ""}
+                  {customer.label}
                 </option>
               ))}
             </select>
@@ -144,7 +120,7 @@ export default async function OrdersPage() {
               <option value="">Select SKU</option>
               {skus.map((sku) => (
                 <option key={sku.id} value={sku.id}>
-                  {sku.product.name} / {sku.code} / {sku.name}
+                  {sku.label}
                 </option>
               ))}
             </select>
@@ -210,11 +186,11 @@ export default async function OrdersPage() {
                     <td className="px-4 py-3 font-medium">
                       {order.orderNumber}
                     </td>
-                    <td className="px-4 py-3">{order.customer.name}</td>
+                    <td className="px-4 py-3">{order.customerName}</td>
                     <td className="px-4 py-3">
-                      {order.items.map((item) => item.sku.code).join(", ")}
+                      {order.items.join(", ")}
                     </td>
-                    <td className="px-4 py-3">RM {order.total.toString()}</td>
+                    <td className="px-4 py-3">RM {order.total}</td>
                     <td className="px-4 py-3">{order.orderStatus}</td>
                     <td className="px-4 py-3">{order.paymentStatus}</td>
                     <td className="px-4 py-3">

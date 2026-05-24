@@ -8,9 +8,8 @@ import {
   setPaymentMethodEnabled,
   updatePaymentProof,
 } from "./actions";
-import { PaymentStatus } from "@/generated/prisma/client";
 import { getActiveCompany } from "@/lib/company";
-import { prisma } from "@/lib/prisma";
+import { getAdminPayments } from "@/services/admin-queries";
 
 export const dynamic = "force-dynamic";
 
@@ -20,52 +19,26 @@ type PaymentsPageProps = {
   }>;
 };
 
-const paymentStatusOptions = Object.values(PaymentStatus);
+const paymentStatusOptions = [
+  "unpaid",
+  "awaiting_confirmation",
+  "paid",
+  "failed",
+  "refund_required",
+  "refunded",
+];
 
 export default async function PaymentsPage({ searchParams }: PaymentsPageProps) {
   const { status } = await searchParams;
-  const statusFilter = paymentStatusOptions.includes(status as PaymentStatus)
-    ? (status as PaymentStatus)
+  const statusFilter = paymentStatusOptions.includes(status ?? "")
+    ? status
     : undefined;
 
   const company = await getActiveCompany();
-  const [paymentMethods, payableOrders, payments] = await Promise.all([
-    prisma.paymentMethod.findMany({
-      where: { companyId: company.id },
-      orderBy: [{ enabled: "desc" }, { name: "asc" }],
-    }),
-    prisma.order.findMany({
-      where: {
-        companyId: company.id,
-        paymentStatus: {
-          not: PaymentStatus.paid,
-        },
-      },
-      include: { customer: true },
-      orderBy: { createdAt: "desc" },
-      take: 50,
-    }),
-    prisma.payment.findMany({
-      where: {
-        companyId: company.id,
-        ...(statusFilter ? { status: statusFilter } : {}),
-      },
-      include: {
-        order: {
-          include: {
-            customer: true,
-          },
-        },
-        paymentMethod: true,
-        events: {
-          orderBy: { createdAt: "desc" },
-          take: 3,
-        },
-      },
-      orderBy: { createdAt: "desc" },
-      take: 100,
-    }),
-  ]);
+  const { paymentMethods, payableOrders, payments } = await getAdminPayments(
+    company.id,
+    statusFilter,
+  );
 
   const enabledPaymentMethods = paymentMethods.filter((method) => method.enabled);
 
@@ -121,8 +94,7 @@ export default async function PaymentsPage({ searchParams }: PaymentsPageProps) 
                 <option value="">Select order</option>
                 {payableOrders.map((order) => (
                   <option key={order.id} value={order.id}>
-                    {order.orderNumber} / {order.customer.name} / RM{" "}
-                    {order.total.toString()}
+                    {order.label}
                   </option>
                 ))}
               </select>
@@ -204,13 +176,13 @@ export default async function PaymentsPage({ searchParams }: PaymentsPageProps) 
                       href={`/orders/${payment.orderId}`}
                       className="font-semibold text-blue-600"
                     >
-                      {payment.order.orderNumber}
+                      {payment.orderNumber}
                     </Link>
                     <p className="mt-1 text-sm text-slate-600">
-                      {payment.order.customer.name} / {payment.paymentMethod.name}
+                      {payment.customerName} / {payment.methodName}
                     </p>
                     <p className="mt-1 text-sm font-medium">
-                      RM {payment.amount.toString()} / {payment.status}
+                      RM {payment.amount} / {payment.status}
                     </p>
                   </div>
                   <div className="text-right text-xs text-slate-500">

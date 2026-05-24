@@ -1,19 +1,5 @@
 import { randomUUID } from "node:crypto";
-import pg from "pg";
-
-const { Pool } = pg;
-
-const databaseUrl = process.env.DATABASE_URL;
-
-const pool =
-  databaseUrl == null
-    ? null
-    : new Pool({
-        connectionString: databaseUrl,
-        ssl: databaseUrl.includes("supabase.com")
-          ? { rejectUnauthorized: false }
-          : undefined,
-      });
+import { sqlPool } from "@/lib/sql";
 
 type CreateCustomerOrderInput = {
   companySlug: string;
@@ -51,7 +37,7 @@ function requiredText(value: unknown, field: string) {
 export async function createCustomerOrderSql(
   input: CreateCustomerOrderInput,
 ): Promise<CreatedCustomerOrder> {
-  if (!pool) {
+  if (!sqlPool) {
     throw new Error("DATABASE_URL is not configured");
   }
 
@@ -65,7 +51,7 @@ export async function createCustomerOrderSql(
     throw new Error("quantity must be greater than zero");
   }
 
-  const client = await pool.connect();
+  const client = await sqlPool.connect();
 
   try {
     await client.query("BEGIN");
