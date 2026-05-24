@@ -1,9 +1,6 @@
-import { prisma } from "@/lib/prisma";
-import {
-  OrderStatus,
-  PaymentEventType,
-  PaymentStatus,
-} from "@/generated/prisma/client";
+import { randomUUID } from "node:crypto";
+import type { PoolClient } from "pg";
+import { sqlPool } from "@/lib/sql";
 
 type CreatePaymentInput = {
   companyId: string;
@@ -20,84 +17,129 @@ type PaymentTransitionInput = {
   notes?: string | null;
 };
 
-async function addPaymentEvent(
-  tx: TransactionClient,
-  companyId: string,
-  paymentId: string,
-  type: PaymentEventType,
-  notes?: string | null,
+type PaymentResult = {
+  id: string;
+  orderId: string;
+};
+
+async function withClient<T>(
+  callback: (client: PoolClient) => Promise<T>,
 ) {
-  await tx.paymentEvent.create({
-    data: {
-      companyId,
-      paymentId,
-      type,
-      notes,
-    },
-  });
+  if (!sqlPool) {
+    throw new Error("DATABASE_URL is not configured");
+  }
+
+  const client = await sqlPool.connect();
+
+  try {
+    await client.query("BEGIN");
+    const result = await callback(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 }
 
-export async function createManualPayment(input: CreatePaymentInput) {
-  return prisma.$transaction(async (tx) => {
-    const order = await tx.order.findFirstOrThrow({
-      where: {
-        id: input.orderId,
-        companyId: input.companyId,
-        orderStatus: {
-          not: OrderStatus.cancelled,
-        },
-        paymentStatus: {
-          notIn: [PaymentStatus.paid, PaymentStatus.refunded],
-        },
-      },
-    });
+async function addPaymentEvent(
+  client: PoolClient,
+  companyId: string,
+  paymentId: string,
+  type: string,
+  notes?: string | null,
+) {
+  await client.query(
+    `INSERT INTO payment_events
+      (id, "companyId", "paymentId", type, notes, "createdAt")
+     VALUES
+      ($1, $2, $3, $4, $5, NOW())`,
+    [randomUUID(), companyId, paymentId, type, notes ?? null],
+  );
+}
 
-    const paymentMethod = await tx.paymentMethod.findFirstOrThrow({
-      where: {
-        id: input.paymentMethodId,
-        companyId: input.companyId,
-        enabled: true,
-      },
-    });
+export async function createManualPayment(
+  input: CreatePaymentInput,
+): Promise<PaymentResult> {
+  return withClient(async (client) => {
+    const orderResult = await client.query<{ id: string }>(
+      `SELECT id
+         FROM orders
+        WHERE id = $1
+          AND "companyId" = $2
+          AND "orderStatus" <> 'cancelled'
+          AND "paymentStatus" NOT IN ('paid', 'refunded')
+        LIMIT 1`,
+      [input.orderId, input.companyId],
+    );
+    const order = orderResult.rows[0];
+    if (!order) {
+      throw new Error("Order is not payable");
+    }
 
-    const payment = await tx.payment.create({
-      data: {
-        companyId: input.companyId,
-        orderId: order.id,
-        paymentMethodId: paymentMethod.id,
-        amount: input.amount,
-        status: PaymentStatus.awaiting_confirmation,
-        proofUrl: input.proofUrl,
-        referenceNumber: input.referenceNumber,
-      },
-    });
+    const methodResult = await client.query<{ id: string; name: string }>(
+      `SELECT id, name
+         FROM payment_methods
+        WHERE id = $1
+          AND "companyId" = $2
+          AND enabled = true
+        LIMIT 1`,
+      [input.paymentMethodId, input.companyId],
+    );
+    const paymentMethod = methodResult.rows[0];
+    if (!paymentMethod) {
+      throw new Error("Payment method is not enabled");
+    }
+
+    const paymentId = randomUUID();
+    await client.query(
+      `INSERT INTO payments
+        (id, "companyId", "orderId", "paymentMethodId", amount, status,
+         "proofUrl", "referenceNumber", "createdAt", "updatedAt")
+       VALUES
+        ($1, $2, $3, $4, $5, 'awaiting_confirmation', $6, $7, NOW(), NOW())`,
+      [
+        paymentId,
+        input.companyId,
+        order.id,
+        paymentMethod.id,
+        input.amount,
+        input.proofUrl ?? null,
+        input.referenceNumber ?? null,
+      ],
+    );
 
     await addPaymentEvent(
-      tx,
+      client,
       input.companyId,
-      payment.id,
-      PaymentEventType.created,
+      paymentId,
+      "created",
       `Payment created via ${paymentMethod.name}`,
     );
 
     if (input.proofUrl || input.referenceNumber) {
       await addPaymentEvent(
-        tx,
+        client,
         input.companyId,
-        payment.id,
-        PaymentEventType.proof_submitted,
+        paymentId,
+        "proof_submitted",
         "Proof or reference recorded",
       );
     }
 
-    if (order.paymentStatus === PaymentStatus.unpaid) {
-      await tx.order.update({
-        where: { id: order.id, companyId: input.companyId },
-        data: { paymentStatus: PaymentStatus.awaiting_confirmation },
-      });
-    }
+    await client.query(
+      `UPDATE orders
+          SET "paymentStatus" = 'awaiting_confirmation',
+              "updatedAt" = NOW()
+        WHERE id = $1
+          AND "companyId" = $2
+          AND "paymentStatus" = 'unpaid'`,
+      [order.id, input.companyId],
+    );
 
-    return payment;
+    return { id: paymentId, orderId: order.id };
   });
 }
 
@@ -106,29 +148,35 @@ export async function updatePaymentProof(input: {
   paymentId: string;
   proofUrl?: string | null;
   referenceNumber?: string | null;
-}) {
-  return prisma.$transaction(async (tx) => {
-    await tx.payment.findFirstOrThrow({
-      where: {
-        id: input.paymentId,
-        companyId: input.companyId,
-        status: PaymentStatus.awaiting_confirmation,
-      },
-    });
+}): Promise<PaymentResult> {
+  return withClient(async (client) => {
+    const payment = await requirePayment(
+      client,
+      input.companyId,
+      input.paymentId,
+      "awaiting_confirmation",
+    );
 
-    const payment = await tx.payment.update({
-      where: { id: input.paymentId, companyId: input.companyId },
-      data: {
-        proofUrl: input.proofUrl,
-        referenceNumber: input.referenceNumber,
-      },
-    });
+    await client.query(
+      `UPDATE payments
+          SET "proofUrl" = $1,
+              "referenceNumber" = $2,
+              "updatedAt" = NOW()
+        WHERE id = $3
+          AND "companyId" = $4`,
+      [
+        input.proofUrl ?? null,
+        input.referenceNumber ?? null,
+        input.paymentId,
+        input.companyId,
+      ],
+    );
 
     await addPaymentEvent(
-      tx,
+      client,
       input.companyId,
-      payment.id,
-      PaymentEventType.proof_submitted,
+      input.paymentId,
+      "proof_submitted",
       "Proof or reference updated",
     );
 
@@ -136,34 +184,70 @@ export async function updatePaymentProof(input: {
   });
 }
 
-export async function confirmPayment(input: PaymentTransitionInput) {
-  return prisma.$transaction(async (tx) => {
-    await tx.payment.findFirstOrThrow({
-      where: {
-        id: input.paymentId,
-        companyId: input.companyId,
-        status: PaymentStatus.awaiting_confirmation,
-      },
-    });
+export async function confirmPayment(
+  input: PaymentTransitionInput,
+): Promise<PaymentResult> {
+  return transitionPayment(input, "awaiting_confirmation", "paid", "confirmed");
+}
 
-    const payment = await tx.payment.update({
-      where: { id: input.paymentId, companyId: input.companyId },
-      data: {
-        status: PaymentStatus.paid,
-        confirmedAt: new Date(),
-      },
-    });
+export async function failPayment(
+  input: PaymentTransitionInput,
+): Promise<PaymentResult> {
+  return transitionPayment(input, "awaiting_confirmation", "failed", "failed");
+}
 
-    await tx.order.update({
-      where: { id: payment.orderId, companyId: input.companyId },
-      data: { paymentStatus: PaymentStatus.paid },
-    });
+export async function markRefundRequired(
+  input: PaymentTransitionInput,
+): Promise<PaymentResult> {
+  return transitionPayment(input, "paid", "refund_required", "refund_required");
+}
+
+export async function markRefunded(
+  input: PaymentTransitionInput,
+): Promise<PaymentResult> {
+  return transitionPayment(input, "refund_required", "refunded", "refunded");
+}
+
+async function transitionPayment(
+  input: PaymentTransitionInput,
+  fromStatus: string,
+  toStatus: string,
+  eventType: string,
+): Promise<PaymentResult> {
+  return withClient(async (client) => {
+    const payment = await requirePayment(
+      client,
+      input.companyId,
+      input.paymentId,
+      fromStatus,
+    );
+
+    await client.query(
+      `UPDATE payments
+          SET status = $1,
+              "confirmedAt" = CASE WHEN $1 = 'paid' THEN NOW() ELSE "confirmedAt" END,
+              "failedAt" = CASE WHEN $1 = 'failed' THEN NOW() ELSE "failedAt" END,
+              "refundedAt" = CASE WHEN $1 = 'refunded' THEN NOW() ELSE "refundedAt" END,
+              "updatedAt" = NOW()
+        WHERE id = $2
+          AND "companyId" = $3`,
+      [toStatus, input.paymentId, input.companyId],
+    );
+
+    await client.query(
+      `UPDATE orders
+          SET "paymentStatus" = $1,
+              "updatedAt" = NOW()
+        WHERE id = $2
+          AND "companyId" = $3`,
+      [toStatus, payment.orderId, input.companyId],
+    );
 
     await addPaymentEvent(
-      tx,
+      client,
       input.companyId,
-      payment.id,
-      PaymentEventType.confirmed,
+      input.paymentId,
+      eventType,
       input.notes,
     );
 
@@ -171,129 +255,26 @@ export async function confirmPayment(input: PaymentTransitionInput) {
   });
 }
 
-export async function failPayment(input: PaymentTransitionInput) {
-  return prisma.$transaction(async (tx) => {
-    await tx.payment.findFirstOrThrow({
-      where: {
-        id: input.paymentId,
-        companyId: input.companyId,
-        status: PaymentStatus.awaiting_confirmation,
-      },
-    });
+async function requirePayment(
+  client: PoolClient,
+  companyId: string,
+  paymentId: string,
+  status: string,
+): Promise<PaymentResult> {
+  const result = await client.query<PaymentResult>(
+    `SELECT id, "orderId" AS "orderId"
+       FROM payments
+      WHERE id = $1
+        AND "companyId" = $2
+        AND status = $3
+      LIMIT 1`,
+    [paymentId, companyId, status],
+  );
 
-    const payment = await tx.payment.update({
-      where: { id: input.paymentId, companyId: input.companyId },
-      data: {
-        status: PaymentStatus.failed,
-        failedAt: new Date(),
-      },
-    });
+  const payment = result.rows[0];
+  if (!payment) {
+    throw new Error("Payment is not in the expected status");
+  }
 
-    const paidPayment = await tx.payment.findFirst({
-      where: {
-        companyId: input.companyId,
-        orderId: payment.orderId,
-        status: PaymentStatus.paid,
-      },
-    });
-    const awaitingPayment = await tx.payment.findFirst({
-      where: {
-        companyId: input.companyId,
-        orderId: payment.orderId,
-        status: PaymentStatus.awaiting_confirmation,
-      },
-    });
-
-    if (!paidPayment) {
-      await tx.order.update({
-        where: { id: payment.orderId, companyId: input.companyId },
-        data: {
-          paymentStatus: awaitingPayment
-            ? PaymentStatus.awaiting_confirmation
-            : PaymentStatus.failed,
-        },
-      });
-    }
-
-    await addPaymentEvent(
-      tx,
-      input.companyId,
-      payment.id,
-      PaymentEventType.failed,
-      input.notes,
-    );
-
-    return payment;
-  });
+  return payment;
 }
-
-export async function markRefundRequired(input: PaymentTransitionInput) {
-  return prisma.$transaction(async (tx) => {
-    await tx.payment.findFirstOrThrow({
-      where: {
-        id: input.paymentId,
-        companyId: input.companyId,
-        status: PaymentStatus.paid,
-      },
-    });
-
-    const payment = await tx.payment.update({
-      where: { id: input.paymentId, companyId: input.companyId },
-      data: { status: PaymentStatus.refund_required },
-    });
-
-    await tx.order.update({
-      where: { id: payment.orderId, companyId: input.companyId },
-      data: { paymentStatus: PaymentStatus.refund_required },
-    });
-
-    await addPaymentEvent(
-      tx,
-      input.companyId,
-      payment.id,
-      PaymentEventType.refund_required,
-      input.notes,
-    );
-
-    return payment;
-  });
-}
-
-export async function markRefunded(input: PaymentTransitionInput) {
-  return prisma.$transaction(async (tx) => {
-    await tx.payment.findFirstOrThrow({
-      where: {
-        id: input.paymentId,
-        companyId: input.companyId,
-        status: PaymentStatus.refund_required,
-      },
-    });
-
-    const payment = await tx.payment.update({
-      where: { id: input.paymentId, companyId: input.companyId },
-      data: {
-        status: PaymentStatus.refunded,
-        refundedAt: new Date(),
-      },
-    });
-
-    await tx.order.update({
-      where: { id: payment.orderId, companyId: input.companyId },
-      data: { paymentStatus: PaymentStatus.refunded },
-    });
-
-    await addPaymentEvent(
-      tx,
-      input.companyId,
-      payment.id,
-      PaymentEventType.refunded,
-      input.notes,
-    );
-
-    return payment;
-  });
-}
-
-type TransactionClient = Parameters<
-  Parameters<typeof prisma.$transaction>[0]
->[0];

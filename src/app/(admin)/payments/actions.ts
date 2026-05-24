@@ -8,7 +8,7 @@ import {
   requiredPositiveNumber,
   requiredString,
 } from "@/lib/form";
-import { prisma } from "@/lib/prisma";
+import { sqlQuery } from "@/lib/sql";
 import {
   confirmPayment as confirmPaymentService,
   createManualPayment,
@@ -23,10 +23,14 @@ export async function setPaymentMethodEnabled(formData: FormData) {
   const id = requiredString(formData, "id");
   const enabled = formData.get("enabled") === "true";
 
-  await prisma.paymentMethod.update({
-    where: { id, companyId: company.id },
-    data: { enabled },
-  });
+  await sqlQuery(
+    `UPDATE payment_methods
+        SET enabled = $1,
+            "updatedAt" = NOW()
+      WHERE id = $2
+        AND "companyId" = $3`,
+    [enabled, id, company.id],
+  );
 
   revalidatePaymentPages();
 }
@@ -109,4 +113,3 @@ function revalidatePaymentPages(orderId?: string) {
     revalidatePath(`/orders/${orderId}`);
   }
 }
-

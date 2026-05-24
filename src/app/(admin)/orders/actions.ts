@@ -1,5 +1,6 @@
 "use server";
 
+import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { getActiveCompany } from "@/lib/company";
@@ -11,24 +12,19 @@ import {
   requiredPositiveNumber,
   requiredString,
 } from "@/lib/form";
-import { prisma } from "@/lib/prisma";
-import {
-  cancelAndReleaseOrder,
-  confirmAndAllocateOrder,
-  retryOrderAllocation,
-} from "@/services/inventory";
+import { sqlPool, sqlQuery } from "@/lib/sql";
 
 async function nextOrderNumber(companySlug: string) {
   const today = new Date().toISOString().slice(0, 10).replaceAll("-", "");
-  const count = await prisma.order.count({
-    where: {
-      orderNumber: {
-        startsWith: `${companySlug.toUpperCase()}-${today}`,
-      },
-    },
-  });
+  const prefix = `${companySlug.toUpperCase()}-${today}`;
+  const result = await sqlQuery<{ count: string }>(
+    `SELECT COUNT(*)::text AS count
+       FROM orders
+      WHERE "orderNumber" LIKE $1`,
+    [`${prefix}%`],
+  );
 
-  return `${companySlug.toUpperCase()}-${today}-${String(count + 1).padStart(4, "0")}`;
+  return `${prefix}-${String(Number(result.rows[0]?.count ?? 0) + 1).padStart(4, "0")}`;
 }
 
 export async function createOrder(formData: FormData) {
@@ -40,75 +36,146 @@ export async function createOrder(formData: FormData) {
   const deliveryFee = requiredNonNegativeNumber(formData, "deliveryFee");
 
   const orderNumber = await nextOrderNumber(company.slug);
+  if (!sqlPool) {
+    throw new Error("DATABASE_URL is not configured");
+  }
 
-  const order = await prisma.$transaction(async (tx) => {
+  const client = await sqlPool.connect();
+  let orderId = "";
+
+  try {
+    await client.query("BEGIN");
+
     const customer = existingCustomerId
-      ? await tx.customer.findFirstOrThrow({
-          where: {
-            id: existingCustomerId,
-            companyId: company.id,
-          },
-        })
-      : await tx.customer.create({
-          data: {
-            companyId: company.id,
-            name: requiredString(formData, "customerName"),
-            phone: optionalString(formData, "customerPhone"),
-            email: optionalString(formData, "customerEmail"),
-            address: optionalString(formData, "customerAddress"),
-          },
-        });
+      ? (
+          await client.query<{
+            id: string;
+            address: string | null;
+          }>(
+            `SELECT id, address
+               FROM customers
+              WHERE id = $1
+                AND "companyId" = $2
+              LIMIT 1`,
+            [existingCustomerId, company.id],
+          )
+        ).rows[0]
+      : null;
 
-    const sku = await tx.sku.findFirstOrThrow({
-      where: {
-        id: skuId,
-        companyId: company.id,
-        isActive: true,
-      },
-    });
+    const customerId = customer?.id ?? randomUUID();
+    const customerAddress =
+      customer?.address ?? optionalString(formData, "customerAddress");
+
+    if (!customer) {
+      await client.query(
+        `INSERT INTO customers
+          (id, "companyId", name, phone, email, address, "createdAt", "updatedAt")
+         VALUES
+          ($1, $2, $3, $4, $5, $6, NOW(), NOW())`,
+        [
+          customerId,
+          company.id,
+          requiredString(formData, "customerName"),
+          optionalString(formData, "customerPhone"),
+          optionalString(formData, "customerEmail"),
+          customerAddress,
+        ],
+      );
+    }
+
+    const sku = (
+      await client.query<{ id: string }>(
+        `SELECT id
+           FROM skus
+          WHERE id = $1
+            AND "companyId" = $2
+            AND "isActive" = true
+          LIMIT 1`,
+        [skuId, company.id],
+      )
+    ).rows[0];
+
+    if (!sku) {
+      throw new Error("Selected SKU is not available");
+    }
 
     const subtotal = itemQuantity * unitPrice;
     const total = subtotal + deliveryFee;
     const deliveryAddress =
-      optionalString(formData, "deliveryAddress") ?? customer.address;
+      optionalString(formData, "deliveryAddress") ?? customerAddress;
 
     if (!deliveryAddress) {
       throw new Error("deliveryAddress is required");
     }
 
-    return tx.order.create({
-      data: {
-        companyId: company.id,
-        customerId: customer.id,
+    orderId = randomUUID();
+    await client.query(
+      `INSERT INTO orders
+        (id, "companyId", "customerId", "orderNumber", "sourceChannel",
+         "deliveryAddress", "requestedTimeSlot", subtotal, "deliveryFee", total,
+         notes, "createdAt", "updatedAt")
+       VALUES
+        ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NOW(), NOW())`,
+      [
+        orderId,
+        company.id,
+        customerId,
         orderNumber,
-        sourceChannel: requiredString(formData, "sourceChannel"),
+        requiredString(formData, "sourceChannel"),
         deliveryAddress,
-        requestedTimeSlot: optionalString(formData, "requestedTimeSlot"),
-        subtotal: money(subtotal),
-        deliveryFee: money(deliveryFee),
-        total: money(total),
-        notes: optionalString(formData, "notes"),
-        items: {
-          create: {
-            skuId: sku.id,
-            quantity: quantity(itemQuantity),
-            unitPrice: money(unitPrice),
-            lineTotal: money(subtotal),
-          },
-        },
-      },
-    });
-  });
+        optionalString(formData, "requestedTimeSlot"),
+        money(subtotal),
+        money(deliveryFee),
+        money(total),
+        optionalString(formData, "notes"),
+      ],
+    );
+
+    await client.query(
+      `INSERT INTO order_items
+        (id, "orderId", "skuId", quantity, "unitPrice", "lineTotal",
+         "createdAt", "updatedAt")
+       VALUES
+        ($1, $2, $3, $4, $5, $6, NOW(), NOW())`,
+      [
+        randomUUID(),
+        orderId,
+        sku.id,
+        quantity(itemQuantity),
+        money(unitPrice),
+        money(subtotal),
+      ],
+    );
+
+    await client.query("COMMIT");
+  } catch (error) {
+    await client.query("ROLLBACK");
+    throw error;
+  } finally {
+    client.release();
+  }
 
   revalidatePath("/orders");
-  redirect(`/orders/${order.id}`);
+  redirect(`/orders/${orderId}`);
 }
 
 export async function confirmOrder(formData: FormData) {
   const company = await getActiveCompany();
   const id = requiredString(formData, "id");
 
-  await confirmAndAllocateOrder(company.id, id);
+  await sqlQuery(
+    `UPDATE orders
+        SET "orderStatus" = 'confirmed',
+            "allocationStatus" = CASE
+              WHEN "allocationStatus" = 'not_required' THEN 'pending'
+              ELSE "allocationStatus"
+            END,
+            "confirmedAt" = COALESCE("confirmedAt", NOW()),
+            "updatedAt" = NOW()
+      WHERE id = $1
+        AND "companyId" = $2`,
+    [id, company.id],
+  );
 
   revalidatePath("/orders");
   revalidatePath(`/orders/${id}`);
@@ -118,7 +185,14 @@ export async function retryAllocation(formData: FormData) {
   const company = await getActiveCompany();
   const id = requiredString(formData, "id");
 
-  await retryOrderAllocation(company.id, id);
+  await sqlQuery(
+    `UPDATE orders
+        SET "allocationStatus" = 'pending',
+            "updatedAt" = NOW()
+      WHERE id = $1
+        AND "companyId" = $2`,
+    [id, company.id],
+  );
 
   revalidatePath("/orders");
   revalidatePath(`/orders/${id}`);
@@ -128,7 +202,17 @@ export async function cancelOrder(formData: FormData) {
   const company = await getActiveCompany();
   const id = requiredString(formData, "id");
 
-  await cancelAndReleaseOrder(company.id, id);
+  await sqlQuery(
+    `UPDATE orders
+        SET "orderStatus" = 'cancelled',
+            "fulfillmentStatus" = 'cancelled',
+            "deliveryStatus" = 'cancelled',
+            "cancelledAt" = COALESCE("cancelledAt", NOW()),
+            "updatedAt" = NOW()
+      WHERE id = $1
+        AND "companyId" = $2`,
+    [id, company.id],
+  );
 
   revalidatePath("/orders");
   revalidatePath(`/orders/${id}`);
