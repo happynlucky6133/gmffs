@@ -5,40 +5,84 @@ import { GoldMarryBadge } from "./FreshStackLogo";
 
 type FruitProduct = {
   id: string;
+  code: string;
   name: string;
   imageUrl: string;
   price: number;
 };
 
 const products: FruitProduct[] = [
-  { id: "mango-cup", name: "Mango Fruit Cup", imageUrl: "/products/fruit1.jpeg", price: 8 },
-  { id: "dragonfruit-blueberry", name: "Dragon Fruit Blueberry Cup", imageUrl: "/products/fruit2.jpeg", price: 8 },
-  { id: "green-kiwi", name: "Green Kiwi Cup", imageUrl: "/products/fruit3.jpeg", price: 8 },
-  { id: "mango-blueberry", name: "Mango Blueberry Cup", imageUrl: "/products/fruit4.jpeg", price: 8 },
-  { id: "melon-tomato", name: "Melon Tomato Cup", imageUrl: "/products/fruit5.jpeg", price: 8 },
-  { id: "gold-kiwi", name: "Gold Kiwi Cup", imageUrl: "/products/fruit6.jpeg", price: 8 },
-  { id: "orange-cup", name: "Orange Cup", imageUrl: "/products/fruit7.jpeg", price: 8 },
-  { id: "honeydew-cup", name: "Honeydew Cup", imageUrl: "/products/fruit8.jpeg", price: 8 },
+  { id: "mango-cup", code: "FRUIT-MANGO", name: "Mango Fruit Cup", imageUrl: "/products/fruit1.jpeg", price: 8 },
+  { id: "dragonfruit-blueberry", code: "FRUIT-DRAGON-BLUEBERRY", name: "Dragon Fruit Blueberry Cup", imageUrl: "/products/fruit2.jpeg", price: 8 },
+  { id: "green-kiwi", code: "FRUIT-GREEN-KIWI", name: "Green Kiwi Cup", imageUrl: "/products/fruit3.jpeg", price: 8 },
+  { id: "mango-blueberry", code: "FRUIT-MANGO-BLUEBERRY", name: "Mango Blueberry Cup", imageUrl: "/products/fruit4.jpeg", price: 8 },
+  { id: "melon-tomato", code: "FRUIT-MELON-TOMATO", name: "Melon Tomato Cup", imageUrl: "/products/fruit5.jpeg", price: 8 },
+  { id: "gold-kiwi", code: "FRUIT-GOLDEN-KIWI", name: "Gold Kiwi Cup", imageUrl: "/products/fruit6.jpeg", price: 8 },
+  { id: "orange-cup", code: "FRUIT-ORANGE", name: "Orange Cup", imageUrl: "/products/fruit7.jpeg", price: 8 },
+  { id: "honeydew-cup", code: "FRUIT-HONEYDEW", name: "Honeydew Cup", imageUrl: "/products/fruit8.jpeg", price: 8 },
 ];
 
 export function DemoOrderForm() {
   const [selectedProductId, setSelectedProductId] = useState(products[0].id);
   const [quantity, setQuantity] = useState(1);
   const [orderNumber, setOrderNumber] = useState<string | null>(null);
+  const [serverTotal, setServerTotal] = useState<string | null>(null);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const selectedProduct = products.find((p) => p.id === selectedProductId) ?? products[0];
   const total = useMemo(() => selectedProduct.price * quantity, [quantity, selectedProduct.price]);
 
-  function handleSubmit(event: FormEvent<HTMLFormElement>) {
+  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const date = new Date();
-    const orderSuffix = String(date.getTime()).slice(-6);
-    setOrderNumber(`GM-${date.toISOString().slice(0, 10).replaceAll("-", "")}-${orderSuffix}`);
-    window.scrollTo({ top: 0, behavior: "smooth" });
+    setSubmitError(null);
+    setIsSubmitting(true);
+
+    const formData = new FormData(event.currentTarget);
+
+    try {
+      const response = await fetch("/api/customer-orders", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          companySlug: "gm",
+          skuCode: selectedProduct.code,
+          quantity,
+          customerName: formData.get("customerName"),
+          customerPhone: formData.get("customerPhone"),
+          customerEmail: formData.get("customerEmail"),
+          deliveryAddress: formData.get("deliveryAddress"),
+          requestedTimeSlot: formData.get("requestedTimeSlot"),
+          notes: formData.get("notes"),
+        }),
+      });
+
+      const payload = (await response.json()) as {
+        orderNumber?: string;
+        total?: string;
+        error?: string;
+      };
+
+      if (!response.ok || !payload.orderNumber) {
+        throw new Error(payload.error ?? "Unable to create order");
+      }
+
+      setOrderNumber(payload.orderNumber);
+      setServerTotal(payload.total ?? total.toFixed(2));
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    } catch (error) {
+      setSubmitError(
+        error instanceof Error
+          ? error.message
+          : "Unable to create order. Please try again.",
+      );
+    } finally {
+      setIsSubmitting(false);
+    }
   }
 
   if (orderNumber) {
-    return <OrderConfirmation product={selectedProduct} quantity={quantity} total={total} orderNumber={orderNumber} onReset={() => setOrderNumber(null)} />;
+    return <OrderConfirmation product={selectedProduct} quantity={quantity} total={Number(serverTotal ?? total)} orderNumber={orderNumber} onReset={() => setOrderNumber(null)} />;
   }
 
   return (
@@ -164,6 +208,7 @@ export function DemoOrderForm() {
               <label className="block">
                 <span className="text-sm font-medium text-fs-muted">Name</span>
                 <input
+                  name="customerName"
                   required
                   autoComplete="name"
                   className="mt-1 h-11 w-full rounded-lg border border-fs-green-pale/60 bg-white px-3 text-base text-fs-text transition focus:border-fs-green focus:outline-none focus:ring-2 focus:ring-fs-green/20"
@@ -175,6 +220,7 @@ export function DemoOrderForm() {
               <label className="block">
                 <span className="text-sm font-medium text-fs-muted">Phone</span>
                 <input
+                  name="customerPhone"
                   required
                   inputMode="tel"
                   autoComplete="tel"
@@ -185,8 +231,21 @@ export function DemoOrderForm() {
 
             <div>
               <label className="block">
+                <span className="text-sm font-medium text-fs-muted">Email</span>
+                <input
+                  name="customerEmail"
+                  type="email"
+                  autoComplete="email"
+                  className="mt-1 h-11 w-full rounded-lg border border-fs-green-pale/60 bg-white px-3 text-base text-fs-text transition focus:border-fs-green focus:outline-none focus:ring-2 focus:ring-fs-green/20"
+                />
+              </label>
+            </div>
+
+            <div>
+              <label className="block">
                 <span className="text-sm font-medium text-fs-muted">Delivery Address</span>
                 <textarea
+                  name="deliveryAddress"
                   required
                   rows={3}
                   autoComplete="street-address"
@@ -199,17 +258,38 @@ export function DemoOrderForm() {
               <label className="block">
                 <span className="text-sm font-medium text-fs-muted">Requested Time</span>
                 <input
+                  name="requestedTimeSlot"
                   placeholder="Today 2–4pm"
                   className="mt-1 h-11 w-full rounded-lg border border-fs-green-pale/60 bg-white px-3 text-base text-fs-text transition focus:border-fs-green focus:outline-none focus:ring-2 focus:ring-fs-green/20"
+                />
+              </label>
+            </div>
+
+            <div>
+              <label className="block">
+                <span className="text-sm font-medium text-fs-muted">Notes</span>
+                <textarea
+                  name="notes"
+                  rows={2}
+                  className="mt-1 w-full rounded-lg border border-fs-green-pale/60 bg-white px-3 py-3 text-base text-fs-text transition focus:border-fs-green focus:outline-none focus:ring-2 focus:ring-fs-green/20"
                 />
               </label>
             </div>
           </div>
         </section>
 
+        {submitError ? (
+          <p className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-sm font-medium text-red-700">
+            {submitError}
+          </p>
+        ) : null}
+
         {/* Submit button */}
-        <button className="flex h-14 w-full items-center justify-center gap-2 rounded-xl bg-fs-green px-6 text-base font-bold text-white shadow-lg shadow-fs-green/20 transition-all hover:bg-fs-green-light hover:shadow-xl hover:shadow-fs-green/30 active:scale-[0.98]">
-          Place Order — RM {total.toFixed(2)}
+        <button
+          disabled={isSubmitting}
+          className="flex h-14 w-full items-center justify-center gap-2 rounded-xl bg-fs-green px-6 text-base font-bold text-white shadow-lg shadow-fs-green/20 transition-all hover:bg-fs-green-light hover:shadow-xl hover:shadow-fs-green/30 active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-70"
+        >
+          {isSubmitting ? "Placing Order..." : `Place Order — RM ${total.toFixed(2)}`}
         </button>
       </form>
 

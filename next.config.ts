@@ -9,6 +9,13 @@ const nextConfig: NextConfig = {
       ...config.experiments,
       asyncWebAssembly: true,
     };
+    config.resolve = {
+      ...config.resolve,
+      conditionNames: [
+        "workerd",
+        ...(config.resolve?.conditionNames ?? []),
+      ],
+    };
 
     return config;
   },
