@@ -1,169 +1,92 @@
 # FreshStack Fulfillment
 
-FreshStack Fulfillment is a Next.js admin application for multi-company order fulfillment operations.
+Multi-company order fulfillment platform (Next.js 16 + Cloudflare Workers + Supabase).
 
-## Current Status
+**Live**: https://order.freshstack.cc/gm | **GitHub**: happynlucky6133/gmffs
 
-Latest known good commit:
+## Current Status (2026-05-27)
 
-```text
-08f4bb5 cloudflare-demo-order-page
-```
+**Phase 3 acceptance in progress.** Latest deploy: v2 worker with Hyperdrive binding.
 
-Production demo URL:
+### Working (direct SQL — Cloudflare-safe)
 
-```text
-https://order.freshstack.cc/gm
-```
+| Page | URL |
+|------|-----|
+| Customer ordering | `order.freshstack.cc/gm` |
+| Order API | `/api/customer-orders` |
+| Admin dashboard | `/dashboard` |
+| Admin orders | `/orders` |
+| Admin payments | `/payments` |
 
-The project is deployed on Cloudflare Workers through OpenNext. Supabase is used as the Postgres database, and Cloudflare R2 is configured for payment proof storage.
+### Not yet working (still on Prisma — WASM breaks on Cloudflare)
 
-Important handoff note: `/gm` is currently a stable demo ordering page for the boss presentation. It intentionally does not write orders into Supabase yet, because Prisma's Cloudflare Workers wasm packaging hit a runtime issue during deployment. The live demo page shows the 8 fruit products, RM 8 pricing, mobile ordering form, and local in-browser order confirmation. After the presentation, restore real order creation by fixing the Cloudflare + Prisma runtime path and reconnecting `/gm` to `createCustomerPortalOrder`.
+| Page |
+|------|
+| `/inventory` |
+| `/production` |
+| `/deliveries` |
+| `/settings` |
+| Customer order status (`/gm/orders/[orderNumber]`) |
 
-## Completed Scope
+These pages use `prisma` directly and need to be converted to `withSqlClient`/`sqlQuery` (see `src/lib/sql.ts`).
 
-Phase 1 admin flow covers:
+## Architecture
 
-- Company-scoped catalog, SKU, stock location, and stock balance management
-- Order creation and order detail review
-- Manual payment creation, proof update, confirmation, failure, and refund workflow
-- Inventory allocation, reservation, release, and movement history
-- Production tasks for orders that cannot be allocated from stock
-- Manual delivery creation, quote, booking, pickup, delivery, failure, and cancellation
-- Operations dashboard queues for payments, production, delivery, and recent orders
-- Company settings, service areas, and payment method configuration
+- **Runtime**: Cloudflare Workers via `@opennextjs/cloudflare`
+- **Database**: Supabase PostgreSQL via Cloudflare Hyperdrive (`HYPERDRIVE` binding)
+- **File storage**: Cloudflare R2 (`PAYMENT_PROOFS` bucket)
+- **ORM**: Prisma 6.19 (for local dev / migrations only — replaced by direct SQL in production)
+- **Frontend**: Next.js 16.2.6, React 19, Tailwind CSS 4
 
-Phase 2 customer ordering flow covers:
+### Two database paths
 
-- Mobile-first `/gm` ordering page
-- 8 Gold Marry fruit products with product images
-- RM 8 pricing for every fruit cup
-- Customer details form and order confirmation experience
+1. **`src/lib/sql.ts`** — per-request `Client`, reads `HYPERDRIVE` binding first, falls back to `DATABASE_URL`
+2. **`src/lib/prisma.ts`** — Prisma client (locally, via `@prisma/adapter-pg`)
 
-Phase 3 deployment foundation covers:
+Admin pages that work on Cloudflare use path 1. Pages still broken use path 2.
 
-- Cloudflare Workers deployment using OpenNext
-- Custom domain binding for `order.freshstack.cc`
-- Separate Supabase database for FreshStack
-- Cloudflare R2 bucket `freshstack-payment-proofs`
-- `DATABASE_URL` stored as a Cloudflare Worker secret
-
-## Hermes / Codex CLI Handoff
-
-Before making changes, pull the latest main branch:
-
-```bash
-git pull origin main
-```
-
-Do not assume `/gm` is already production-grade order persistence. It is live and suitable for presentation, but the current `/gm` page is a demo-safe fallback in `src/components/customer/DemoOrderForm.tsx`.
-
-The previous real customer page queried Prisma from `src/app/[companySlug]/page.tsx`. On Cloudflare Workers, Prisma generated wasm failed with errors like:
-
-```text
-WebAssembly.Module(): Wasm code generation disallowed by embedder
-no such file or directory, readAll '/bundle/static/wasm/f2c55d60b921ca47.wasm'
-```
-
-Current mitigation:
-
-- Prisma was pinned to `6.19.0`.
-- `engineType = "client"` and `runtime = "workerd"` were added in `prisma/schema.prisma`.
-- Next webpack wasm support was enabled in `next.config.ts`.
-- Wrangler additional module rules were added in `wrangler.jsonc`.
-- `/gm` was temporarily decoupled from Prisma to guarantee a working live presentation.
-
-Recommended next technical task:
-
-1. Fix Prisma/OpenNext/Cloudflare wasm bundling in a durable way, preferably from WSL or Linux because OpenNext warns that Windows builds may be unreliable.
-2. Reconnect `/gm` to Supabase order creation.
-3. Verify order creation, order tracking, and payment screenshot upload on Cloudflare.
-4. Keep the current demo page behavior available until real persistence passes live verification.
-
-## Local Development
-
-Install dependencies:
+## Setup
 
 ```bash
 npm install
+npx prisma generate
 ```
 
-Set `DATABASE_URL`:
+Copy `.env.example` to `.env` and fill in real credentials. For Cloudflare deploy:
 
 ```bash
-export DATABASE_URL="postgresql://freshstack_admin:freshstack_dev_2026@localhost:5432/freshstack"
+export CLOUDFLARE_API_TOKEN="cfut_..."
+export CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE="postgresql://..."
+npm run cf:build
+npm run cf:deploy
 ```
-
-For Windows PowerShell:
-
-```powershell
-$env:DATABASE_URL="postgresql://freshstack_admin:freshstack_dev_2026@localhost:5432/freshstack"
-```
-
-Apply migrations, generate the Prisma client, and seed the database:
-
-```bash
-npx prisma migrate dev
-npm run prisma:generate
-npm run seed
-```
-
-Run the development server:
-
-```bash
-npm run dev
-```
-
-Open [http://localhost:3000](http://localhost:3000). The admin index redirects to `/dashboard`.
-
-On this Windows workstation, PostgreSQL binaries and the local data directory are kept at:
-
-- `C:\tmp\pgsql`
-- `C:\tmp\freshstack-pgdata`
-
-Use the helper scripts for local acceptance testing:
-
-```bat
-start-local.bat
-stop-local.bat
-```
-
-`start-local.bat` starts PostgreSQL if needed, then starts the Next.js dev server.
-
-Seeded admin users use `Admin@12345`:
-
-- `admin@freshstack.cc`
-- `admin@gm.freshstack.cc`
-- `admin@yc.freshstack.cc`
 
 ## Verification
-
-Run these before pushing functional changes:
 
 ```bash
 npm run lint
 npm run typecheck
-npm run build
 npm run cf:build
 ```
 
-Run `npm run seed` only when a local PostgreSQL database is available.
+## Admin accounts
 
-## Architecture Notes
+Seed creates three admin users sharing password `Admin@12345`:
 
-- Business tables are company-scoped with `companyId`.
-- Server actions parse form data and call service modules for cross-table state changes.
-- Cross-table operations such as payments, allocation, production completion, and delivery transitions use database transactions.
-- Generated Prisma files are ignored at `/src/generated/prisma`; regenerate them with `npm run prisma:generate`.
-- Customer URLs are intended to be company-scoped, for example `order.freshstack.cc/gm`.
-- `gmpos.freshstack.cc` remains a separate internal staff system and should not be coupled to this customer-facing app.
+- `admin@freshstack.cc` — Platform Admin
+- `admin@gm.freshstack.cc` — GM Admin
+- `admin@yc.freshstack.cc` — YC Admin
 
-## Current Production Blockers
+## Project phases
 
-These must be addressed before real multi-company production use:
+- **Phase 1 (done)**: Admin fulfillment — catalog, orders, payments, inventory, production, deliveries
+- **Phase 2 (done)**: Customer mobile ordering at `/gm` — 8 fruit cups, RM 8 each
+- **Phase 3 (in progress)**: Cloud deployment, Hyperdrive, R2, live verification
+- **Phase 4 (planned)**: Customer order tracking, delivery status
 
-- Replace the temporary hardcoded company context in `src/lib/company.ts` with authenticated session/company routing.
-- Add authentication and role checks for admin actions.
-- Reconnect the customer-facing `/gm` route to real Supabase order persistence after the Cloudflare Prisma runtime issue is fixed.
-- Complete live verification of R2 payment proof upload from the customer order status page.
-- Add automated tests for payment, allocation, production, and delivery state transitions.
+## Known blockers
+
+- No authentication/authorization yet — admin pages are open
+- `src/lib/company.ts` hardcodes `DEFAULT_COMPANY_SLUG="gm"` 
+- `freshstack_hyperdrive` DB user has `BYPASSRLS` (needed until RLS service-account policies are written)
+- Remaining Prisma pages need SQL conversion (see above)
