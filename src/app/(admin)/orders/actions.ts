@@ -12,7 +12,7 @@ import {
   requiredPositiveNumber,
   requiredString,
 } from "@/lib/form";
-import { sqlPool, sqlQuery } from "@/lib/sql";
+import { sqlQuery, withSqlTransaction } from "@/lib/sql";
 
 async function nextOrderNumber(companySlug: string) {
   const today = new Date().toISOString().slice(0, 10).replaceAll("-", "");
@@ -36,16 +36,9 @@ export async function createOrder(formData: FormData) {
   const deliveryFee = requiredNonNegativeNumber(formData, "deliveryFee");
 
   const orderNumber = await nextOrderNumber(company.slug);
-  if (!sqlPool) {
-    throw new Error("DATABASE_URL is not configured");
-  }
-
-  const client = await sqlPool.connect();
   let orderId = "";
 
-  try {
-    await client.query("BEGIN");
-
+  await withSqlTransaction(async (client) => {
     const customer = existingCustomerId
       ? (
           await client.query<{
@@ -147,13 +140,7 @@ export async function createOrder(formData: FormData) {
       ],
     );
 
-    await client.query("COMMIT");
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
+  });
 
   revalidatePath("/orders");
   redirect(`/orders/${orderId}`);

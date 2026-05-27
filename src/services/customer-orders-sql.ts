@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { sqlPool } from "@/lib/sql";
+import { withSqlTransaction } from "@/lib/sql";
 
 type CreateCustomerOrderInput = {
   companySlug: string;
@@ -37,10 +37,6 @@ function requiredText(value: unknown, field: string) {
 export async function createCustomerOrderSql(
   input: CreateCustomerOrderInput,
 ): Promise<CreatedCustomerOrder> {
-  if (!sqlPool) {
-    throw new Error("DATABASE_URL is not configured");
-  }
-
   const companySlug = requiredText(input.companySlug, "companySlug");
   const skuCode = requiredText(input.skuCode, "skuCode");
   const customerName = requiredText(input.customerName, "customerName");
@@ -51,10 +47,7 @@ export async function createCustomerOrderSql(
     throw new Error("quantity must be greater than zero");
   }
 
-  const client = await sqlPool.connect();
-
-  try {
-    await client.query("BEGIN");
+  return withSqlTransaction(async (client) => {
 
     const companyResult = await client.query<{ id: string; slug: string }>(
       `SELECT id, slug
@@ -162,16 +155,9 @@ export async function createCustomerOrderSql(
       ],
     );
 
-    await client.query("COMMIT");
-
     return {
       orderNumber,
       total: money(subtotal),
     };
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
+  });
 }

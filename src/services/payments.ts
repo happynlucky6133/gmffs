@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { PoolClient } from "pg";
-import { sqlPool } from "@/lib/sql";
+import type { Client as PgClient } from "pg";
+import { withSqlTransaction } from "@/lib/sql";
 
 type CreatePaymentInput = {
   companyId: string;
@@ -23,29 +23,13 @@ type PaymentResult = {
 };
 
 async function withClient<T>(
-  callback: (client: PoolClient) => Promise<T>,
+  callback: (client: PgClient) => Promise<T>,
 ) {
-  if (!sqlPool) {
-    throw new Error("DATABASE_URL is not configured");
-  }
-
-  const client = await sqlPool.connect();
-
-  try {
-    await client.query("BEGIN");
-    const result = await callback(client);
-    await client.query("COMMIT");
-    return result;
-  } catch (error) {
-    await client.query("ROLLBACK");
-    throw error;
-  } finally {
-    client.release();
-  }
+  return withSqlTransaction(callback);
 }
 
 async function addPaymentEvent(
-  client: PoolClient,
+  client: PgClient,
   companyId: string,
   paymentId: string,
   type: string,
@@ -256,7 +240,7 @@ async function transitionPayment(
 }
 
 async function requirePayment(
-  client: PoolClient,
+  client: PgClient,
   companyId: string,
   paymentId: string,
   status: string,

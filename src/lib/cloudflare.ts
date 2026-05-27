@@ -11,6 +11,9 @@ type CloudflareContext = {
         httpMetadata?: { contentType?: string };
       } | null>;
     };
+    HYPERDRIVE?: {
+      connectionString: string;
+    };
   };
 };
 

@@ -246,11 +246,11 @@ export async function getAdminDashboard(
     getOrderRows(companyId, "", [], 8),
     getOrderRows(
       companyId,
-      `AND o."paymentStatus" = $2`,
+      `AND o."paymentStatus"::text = $2`,
       ["awaiting_confirmation"],
       5,
     ),
-    getOrderRows(companyId, `AND o."allocationStatus" = $2`, ["failed"], 5),
+    getOrderRows(companyId, `AND o."allocationStatus"::text = $2`, ["failed"], 5),
     sqlQuery<{
       id: string;
       orderId: string;
@@ -531,7 +531,7 @@ export async function getAdminPayments(companyId: string, status?: string) {
        JOIN payment_methods pm ON pm.id = p."paymentMethodId"
        LEFT JOIN payment_events pe ON pe."paymentId" = p.id
       WHERE p."companyId" = $1
-        AND ($2::text IS NULL OR p.status = $2)
+        AND ($2::text IS NULL OR p.status::text = $2)
       GROUP BY p.id, o."orderNumber", c.name, pm.name
       ORDER BY p."createdAt" DESC
       LIMIT 100`,
