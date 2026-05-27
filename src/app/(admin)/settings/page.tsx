@@ -7,7 +7,7 @@ import {
 } from "./actions";
 import { PaymentMethodType } from "@/generated/prisma/client";
 import { getActiveCompany } from "@/lib/company";
-import { prisma } from "@/lib/prisma";
+import { sqlQuery } from "@/lib/sql";
 
 export const dynamic = "force-dynamic";
 
@@ -18,21 +18,42 @@ const paymentMethodLabels: Record<PaymentMethodType, string> = {
   payment_link: "Payment Link",
 };
 
+type PaymentMethodRow = {
+  id: string;
+  name: string;
+  type: string;
+  enabled: boolean;
+  settings: unknown;
+};
+
+type ServiceAreaRow = {
+  id: string;
+  name: string;
+  code: string;
+  enabled: boolean;
+};
+
 export default async function SettingsPage() {
   const company = await getActiveCompany();
   const [paymentMethods, serviceAreas] = await Promise.all([
-    prisma.paymentMethod.findMany({
-      where: { companyId: company.id },
-      orderBy: [{ enabled: "desc" }, { type: "asc" }],
-    }),
-    prisma.serviceArea.findMany({
-      where: { companyId: company.id },
-      orderBy: [{ enabled: "desc" }, { code: "asc" }],
-    }),
+    sqlQuery<PaymentMethodRow>(
+      `SELECT id, name, type, enabled, settings
+         FROM payment_methods
+        WHERE "companyId" = $1
+        ORDER BY enabled DESC, type ASC`,
+      [company.id],
+    ),
+    sqlQuery<ServiceAreaRow>(
+      `SELECT id, name, code, enabled
+         FROM service_areas
+        WHERE "companyId" = $1
+        ORDER BY enabled DESC, code ASC`,
+      [company.id],
+    ),
   ]);
 
   const existingMethodTypes = new Set(
-    paymentMethods.map((method) => method.type),
+    paymentMethods.rows.map((m) => m.type),
   );
 
   return (
@@ -81,7 +102,7 @@ export default async function SettingsPage() {
             <h2 className="font-semibold">Payment Methods</h2>
           </div>
           <div className="divide-y divide-slate-200">
-            {paymentMethods.map((method) => (
+            {paymentMethods.rows.map((method) => (
               <form
                 key={method.id}
                 action={updatePaymentMethodSettings}
@@ -205,13 +226,13 @@ export default async function SettingsPage() {
           <div className="border-b border-slate-200 px-5 py-4">
             <h2 className="font-semibold">Service Areas</h2>
           </div>
-          {serviceAreas.length === 0 ? (
+          {serviceAreas.rows.length === 0 ? (
             <p className="px-5 py-4 text-sm text-slate-600">
               No service areas yet.
             </p>
           ) : (
             <div className="divide-y divide-slate-200">
-              {serviceAreas.map((area) => (
+              {serviceAreas.rows.map((area) => (
                 <form
                   key={area.id}
                   action={updateServiceArea}

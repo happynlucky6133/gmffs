@@ -1,10 +1,6 @@
-import {
-  InventoryMovementType,
-  ProductionTaskStatus,
-} from "@/generated/prisma/client";
+import { randomUUID } from "node:crypto";
 import { quantity } from "@/lib/form";
-import { prisma } from "@/lib/prisma";
-import { retryOrderAllocation } from "@/services/inventory";
+import { withSqlTransaction } from "@/lib/sql";
 
 export async function createProductionTasksForOrder(input: {
   companyId: string;
@@ -12,54 +8,54 @@ export async function createProductionTasksForOrder(input: {
   locationId: string;
   notes?: string | null;
 }) {
-  return prisma.$transaction(async (tx) => {
-    const order = await tx.order.findFirstOrThrow({
-      where: {
-        id: input.orderId,
-        companyId: input.companyId,
-      },
-      include: {
-        items: true,
-      },
-    });
+  return withSqlTransaction(async (client) => {
+    const order = await client.query<{ id: string; "companyId": string }>(
+      `SELECT id, "companyId" FROM orders WHERE id = $1 AND "companyId" = $2`,
+      [input.orderId, input.companyId],
+    );
+    if (order.rows.length === 0) throw new Error("Order not found");
 
-    await tx.inventoryLocation.findFirstOrThrow({
-      where: {
-        id: input.locationId,
-        companyId: input.companyId,
-        isActive: true,
-      },
-    });
+    const loc = await client.query(
+      `SELECT id FROM inventory_locations WHERE id = $1 AND "companyId" = $2 AND "isActive" = true`,
+      [input.locationId, input.companyId],
+    );
+    if (loc.rows.length === 0) throw new Error("Location not found");
 
-    const openTaskCount = await tx.productionTask.count({
-      where: {
-        companyId: input.companyId,
-        orderId: order.id,
-        status: {
-          in: [ProductionTaskStatus.pending, ProductionTaskStatus.in_progress],
-        },
-      },
-    });
-
-    if (openTaskCount > 0) {
+    const openCount = await client.query<{ count: string }>(
+      `SELECT COUNT(*)::text AS count FROM production_tasks
+        WHERE "companyId" = $1 AND "orderId" = $2
+          AND status IN ('pending', 'in_progress')`,
+      [input.companyId, input.orderId],
+    );
+    if (Number(openCount.rows[0]?.count ?? 0) > 0) {
       throw new Error("Order already has open production tasks");
     }
 
-    for (const item of order.items) {
-      await tx.productionTask.create({
-        data: {
-          companyId: input.companyId,
-          orderId: order.id,
-          orderItemId: item.id,
-          locationId: input.locationId,
-          skuId: item.skuId,
-          quantity: item.quantity,
-          notes: input.notes,
-        },
-      });
+    const items = await client.query<{ id: string; "skuId": string; quantity: string }>(
+      `SELECT id, "skuId", quantity::text FROM order_items WHERE "orderId" = $1`,
+      [input.orderId],
+    );
+
+    for (const item of items.rows) {
+      await client.query(
+        `INSERT INTO production_tasks
+          (id, "companyId", "orderId", "orderItemId", "locationId", "skuId",
+           quantity, status, notes, "createdAt", "updatedAt")
+         VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, NOW(), NOW())`,
+        [
+          randomUUID(),
+          input.companyId,
+          input.orderId,
+          item.id,
+          input.locationId,
+          item.skuId,
+          item.quantity,
+          input.notes ?? null,
+        ],
+      );
     }
 
-    return order;
+    return order.rows[0];
   });
 }
 
@@ -70,138 +66,139 @@ export async function createManualProductionTask(input: {
   taskQuantity: number;
   notes?: string | null;
 }) {
-  return prisma.productionTask.create({
-    data: {
-      companyId: input.companyId,
-      locationId: input.locationId,
-      skuId: input.skuId,
-      quantity: quantity(input.taskQuantity),
-      notes: input.notes,
-    },
+  return withSqlTransaction(async (client) => {
+    const result = await client.query<{
+      id: string; quantity: string; status: string; notes: string | null;
+      "createdAt": Date; "updatedAt": Date; "companyId": string;
+      "locationId": string; "skuId": string; "orderId": string | null; "orderItemId": string | null;
+    }>(
+      `INSERT INTO production_tasks
+        (id, "companyId", "locationId", "skuId", quantity, status, notes, "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, $4, $5, 'pending', $6, NOW(), NOW())
+       RETURNING *`,
+      [
+        randomUUID(),
+        input.companyId,
+        input.locationId,
+        input.skuId,
+        quantity(input.taskQuantity),
+        input.notes ?? null,
+      ],
+    );
+    return result.rows[0];
   });
 }
 
 export async function startProductionTask(companyId: string, taskId: string) {
-  await prisma.productionTask.findFirstOrThrow({
-    where: {
-      id: taskId,
-      companyId,
-      status: ProductionTaskStatus.pending,
-    },
-  });
+  await withSqlTransaction(async (client) => {
+    const task = await client.query(
+      `SELECT id FROM production_tasks WHERE id = $1 AND "companyId" = $2 AND status = 'pending'`,
+      [taskId, companyId],
+    );
+    if (task.rows.length === 0) throw new Error("Task not found or not pending");
 
-  await prisma.productionTask.update({
-    where: {
-      id: taskId,
-      companyId,
-    },
-    data: {
-      status: ProductionTaskStatus.in_progress,
-      startedAt: new Date(),
-    },
+    await client.query(
+      `UPDATE production_tasks SET status = 'in_progress', "startedAt" = NOW(), "updatedAt" = NOW()
+        WHERE id = $1 AND "companyId" = $2`,
+      [taskId, companyId],
+    );
   });
 }
 
 export async function cancelProductionTask(companyId: string, taskId: string) {
-  await prisma.productionTask.findFirstOrThrow({
-    where: {
-      id: taskId,
-      companyId,
-      status: {
-        in: [ProductionTaskStatus.pending, ProductionTaskStatus.in_progress],
-      },
-    },
-  });
+  await withSqlTransaction(async (client) => {
+    const task = await client.query(
+      `SELECT id FROM production_tasks WHERE id = $1 AND "companyId" = $2
+        AND status IN ('pending', 'in_progress')`,
+      [taskId, companyId],
+    );
+    if (task.rows.length === 0) throw new Error("Task not found or cannot be cancelled");
 
-  await prisma.productionTask.update({
-    where: {
-      id: taskId,
-      companyId,
-    },
-    data: {
-      status: ProductionTaskStatus.cancelled,
-    },
+    await client.query(
+      `UPDATE production_tasks SET status = 'cancelled', "updatedAt" = NOW()
+        WHERE id = $1 AND "companyId" = $2`,
+      [taskId, companyId],
+    );
   });
 }
 
-export async function completeProductionTask(
-  companyId: string,
-  taskId: string,
-) {
-  const task = await prisma.$transaction(async (tx) => {
-    await tx.productionTask.findFirstOrThrow({
-      where: {
-        id: taskId,
-        companyId,
-        status: {
-          in: [ProductionTaskStatus.pending, ProductionTaskStatus.in_progress],
-        },
-      },
-    });
+export async function completeProductionTask(companyId: string, taskId: string) {
+  return withSqlTransaction(async (client) => {
+    const taskRows = await client.query<{
+      id: string; "orderId": string | null; "locationId": string;
+      "skuId": string; quantity: string;
+    }>(
+      `SELECT id, "orderId", "locationId", "skuId", quantity::text
+         FROM production_tasks
+        WHERE id = $1 AND "companyId" = $2
+          AND status IN ('pending', 'in_progress')`,
+      [taskId, companyId],
+    );
+    const task = taskRows.rows[0];
+    if (!task) throw new Error("Task not found or not active");
 
-    const savedTask = await tx.productionTask.update({
-      where: {
-        id: taskId,
-        companyId,
-      },
-      data: {
-        status: ProductionTaskStatus.completed,
-        completedAt: new Date(),
-      },
-    });
+    await client.query(
+      `UPDATE production_tasks SET status = 'completed', "completedAt" = NOW(), "updatedAt" = NOW()
+        WHERE id = $1 AND "companyId" = $2`,
+      [taskId, companyId],
+    );
 
-    await tx.inventoryBalance.upsert({
-      where: {
-        companyId_locationId_skuId: {
-          companyId,
-          locationId: savedTask.locationId,
-          skuId: savedTask.skuId,
-        },
-      },
-      update: {
-        onHand: {
-          increment: savedTask.quantity,
-        },
-      },
-      create: {
-        companyId,
-        locationId: savedTask.locationId,
-        skuId: savedTask.skuId,
-        onHand: savedTask.quantity,
-      },
-    });
+    await client.query(
+      `INSERT INTO inventory_balances
+        (id, "companyId", "locationId", "skuId", "onHand", reserved, "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, $4, $5, 0, NOW(), NOW())
+       ON CONFLICT ("companyId", "locationId", "skuId")
+       DO UPDATE SET "onHand" = inventory_balances."onHand" + $5, "updatedAt" = NOW()`,
+      [randomUUID(), companyId, task.locationId, task.skuId, task.quantity],
+    );
 
-    await tx.inventoryMovement.create({
-      data: {
-        companyId,
-        locationId: savedTask.locationId,
-        skuId: savedTask.skuId,
-        orderId: savedTask.orderId,
-        type: InventoryMovementType.production_output,
-        quantity: savedTask.quantity,
-        reason: "Production completed",
-        referenceId: savedTask.id,
-      },
-    });
+    await client.query(
+      `INSERT INTO inventory_movements
+        (id, "companyId", "locationId", "skuId", "orderId", type, quantity, reason, "referenceId", "createdAt")
+       VALUES ($1, $2, $3, $4, $5, 'production_output', $6, 'Production completed', $7, NOW())`,
+      [randomUUID(), companyId, task.locationId, task.skuId, task.orderId, task.quantity, taskId],
+    );
 
-    return savedTask;
-  });
+    if (task.orderId) {
+      const remaining = await client.query<{ count: string }>(
+        `SELECT COUNT(*)::text AS count FROM production_tasks
+          WHERE "companyId" = $1 AND "orderId" = $2
+            AND status IN ('pending', 'in_progress')`,
+        [companyId, task.orderId],
+      );
 
-  if (task.orderId) {
-    const remainingTasks = await prisma.productionTask.count({
-      where: {
-        companyId,
-        orderId: task.orderId,
-        status: {
-          in: [ProductionTaskStatus.pending, ProductionTaskStatus.in_progress],
-        },
-      },
-    });
+      if (Number(remaining.rows[0]?.count ?? 0) === 0) {
+        // Release old reservations and mark order ready for re-allocation
+        await client.query(
+          `UPDATE inventory_reservations
+              SET status = 'released', "releasedAt" = NOW()
+            WHERE "companyId" = $1 AND "orderId" = $2 AND status = 'reserved'`,
+          [companyId, task.orderId],
+        );
 
-    if (remainingTasks === 0) {
-      await retryOrderAllocation(companyId, task.orderId);
+        const releasedResult = await client.query<{ "locationId": string; "skuId": string; quantity: string }>(
+          `SELECT "locationId", "skuId", quantity::text
+             FROM inventory_reservations
+            WHERE "companyId" = $1 AND "orderId" = $2 AND status = 'released'`,
+          [companyId, task.orderId],
+        );
+        for (const res of releasedResult.rows) {
+          await client.query(
+            `UPDATE inventory_balances
+                SET reserved = reserved - $1, "updatedAt" = NOW()
+              WHERE "companyId" = $2 AND "locationId" = $3 AND "skuId" = $4`,
+            [res.quantity, companyId, res.locationId, res.skuId],
+          );
+        }
+
+        await client.query(
+          `UPDATE orders SET "allocationStatus" = 'retry', "updatedAt" = NOW()
+            WHERE id = $1 AND "companyId" = $2`,
+          [task.orderId, companyId],
+        );
+      }
     }
-  }
 
-  return task;
+    return taskRows.rows[0];
+  });
 }

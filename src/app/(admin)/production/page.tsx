@@ -5,68 +5,97 @@ import {
   createTasksForOrder,
   startTask,
 } from "./actions";
-import { AllocationStatus, ProductionTaskStatus } from "@/generated/prisma/client";
 import { getActiveCompany } from "@/lib/company";
-import { prisma } from "@/lib/prisma";
+import { sqlQuery } from "@/lib/sql";
 
 export const dynamic = "force-dynamic";
 
+type OrderRow = {
+  id: string;
+  "orderNumber": string;
+  "customerName": string;
+  total: string;
+  items: unknown;
+  "hasOpenTask": boolean;
+};
+
+type TaskRow = {
+  id: string;
+  quantity: string;
+  status: string;
+  notes: string | null;
+  "createdAt": Date;
+  "locationCode": string;
+  "skuCode": string;
+  "skuName": string;
+  "orderNumber": string | null;
+  "orderCustomerName": string | null;
+};
+
+type LocationRow = { id: string; code: string; name: string };
+type SkuRow = { id: string; code: string; name: string; "productName": string };
+
 export default async function ProductionPage() {
   const company = await getActiveCompany();
-  const [ordersNeedingProduction, tasks, locations, skus] = await Promise.all([
-    prisma.order.findMany({
-      where: {
-        companyId: company.id,
-        allocationStatus: AllocationStatus.failed,
-      },
-      include: {
-        customer: true,
-        items: {
-          include: {
-            sku: true,
-          },
-        },
-        productionTasks: true,
-      },
-      orderBy: { createdAt: "asc" },
-    }),
-    prisma.productionTask.findMany({
-      where: { companyId: company.id },
-      include: {
-        location: true,
-        sku: {
-          include: {
-            product: true,
-          },
-        },
-        order: {
-          include: {
-            customer: true,
-          },
-        },
-      },
-      orderBy: [
-        { status: "asc" },
-        { createdAt: "desc" },
-      ],
-    }),
-    prisma.inventoryLocation.findMany({
-      where: {
-        companyId: company.id,
-        isActive: true,
-      },
-      orderBy: { code: "asc" },
-    }),
-    prisma.sku.findMany({
-      where: {
-        companyId: company.id,
-        isActive: true,
-      },
-      include: {
-        product: true,
-      },
-      orderBy: { code: "asc" },
-    }),
+
+  const [orders, tasks, locations, skus] = await Promise.all([
+    sqlQuery<OrderRow>(
+      `SELECT o.id, o."orderNumber", c.name AS "customerName",
+              o.total::text,
+              COALESCE(
+                json_agg(json_build_object('skuCode', s.code, 'quantity', oi.quantity::text)
+                  ORDER BY oi."createdAt")
+                  FILTER (WHERE oi.id IS NOT NULL),
+                '[]'::json
+              ) AS items,
+              EXISTS (
+                SELECT 1 FROM production_tasks pt
+                WHERE pt."orderId" = o.id
+                  AND pt.status IN ('pending', 'in_progress')
+              ) AS "hasOpenTask"
+         FROM orders o
+         JOIN customers c ON c.id = o."customerId"
+         LEFT JOIN order_items oi ON oi."orderId" = o.id
+         LEFT JOIN skus s ON s.id = oi."skuId"
+        WHERE o."companyId" = $1
+          AND o."allocationStatus" = 'failed'
+        GROUP BY o.id, c.name
+        ORDER BY o."createdAt" ASC`,
+      [company.id],
+    ),
+    sqlQuery<TaskRow>(
+      `SELECT pt.id, pt.quantity::text, pt.status, pt.notes, pt."createdAt",
+              l.code AS "locationCode",
+              s.code AS "skuCode", s.name AS "skuName",
+              o."orderNumber" AS "orderNumber",
+              c.name AS "orderCustomerName"
+         FROM production_tasks pt
+         JOIN inventory_locations l ON l.id = pt."locationId"
+         JOIN skus s ON s.id = pt."skuId"
+         LEFT JOIN orders o ON o.id = pt."orderId"
+         LEFT JOIN customers c ON c.id = o."customerId"
+        WHERE pt."companyId" = $1
+        ORDER BY
+          CASE pt.status
+            WHEN 'pending' THEN 1 WHEN 'in_progress' THEN 2
+            WHEN 'completed' THEN 3 WHEN 'cancelled' THEN 4
+          END,
+          pt."createdAt" DESC`,
+      [company.id],
+    ),
+    sqlQuery<LocationRow>(
+      `SELECT id, code, name FROM inventory_locations
+        WHERE "companyId" = $1 AND "isActive" = true
+        ORDER BY code ASC`,
+      [company.id],
+    ),
+    sqlQuery<SkuRow>(
+      `SELECT s.id, s.code, s.name, p.name AS "productName"
+         FROM skus s JOIN products p ON p.id = s."productId"
+        WHERE s."companyId" = $1 AND s."isActive" = true
+        ORDER BY s.code ASC`,
+      [company.id],
+    ),
   ]);
 
   return (
@@ -79,29 +108,10 @@ export default async function ProductionPage() {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-4">
-        <StatusCard label="Need Production" value={ordersNeedingProduction.length} />
-        <StatusCard
-          label="Pending"
-          value={
-            tasks.filter((task) => task.status === ProductionTaskStatus.pending)
-              .length
-          }
-        />
-        <StatusCard
-          label="In Progress"
-          value={
-            tasks.filter(
-              (task) => task.status === ProductionTaskStatus.in_progress,
-            ).length
-          }
-        />
-        <StatusCard
-          label="Completed"
-          value={
-            tasks.filter((task) => task.status === ProductionTaskStatus.completed)
-              .length
-          }
-        />
+        <StatusCard label="Need Production" value={orders.rows.length} />
+        <StatusCard label="Pending" value={tasks.rows.filter((t) => t.status === "pending").length} />
+        <StatusCard label="In Progress" value={tasks.rows.filter((t) => t.status === "in_progress").length} />
+        <StatusCard label="Completed" value={tasks.rows.filter((t) => t.status === "completed").length} />
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[minmax(280px,360px)_1fr]">
@@ -118,9 +128,9 @@ export default async function ProductionPage() {
               className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
             >
               <option value="">Select location</option>
-              {locations.map((location) => (
-                <option key={location.id} value={location.id}>
-                  {location.code} / {location.name}
+              {locations.rows.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.code} / {l.name}
                 </option>
               ))}
             </select>
@@ -133,9 +143,9 @@ export default async function ProductionPage() {
               className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
             >
               <option value="">Select SKU</option>
-              {skus.map((sku) => (
-                <option key={sku.id} value={sku.id}>
-                  {sku.code} / {sku.product.name} / {sku.name}
+              {skus.rows.map((s) => (
+                <option key={s.id} value={s.id}>
+                  {s.code} / {s.productName} / {s.name}
                 </option>
               ))}
             </select>
@@ -168,19 +178,15 @@ export default async function ProductionPage() {
           <div className="border-b border-slate-200 px-5 py-4">
             <h2 className="font-semibold">Orders Needing Production</h2>
           </div>
-          {ordersNeedingProduction.length === 0 ? (
+          {orders.rows.length === 0 ? (
             <p className="px-5 py-4 text-sm text-slate-600">
               No blocked orders right now.
             </p>
           ) : (
             <div className="divide-y divide-slate-200">
-              {ordersNeedingProduction.map((order) => {
-                const hasOpenTask = order.productionTasks.some(
-                  (task) =>
-                    task.status === ProductionTaskStatus.pending ||
-                    task.status === ProductionTaskStatus.in_progress,
-                );
-
+              {orders.rows.map((order) => {
+                type ItemInfo = { skuCode: string; quantity: string };
+                const items: ItemInfo[] = Array.isArray(order.items) ? order.items : [];
                 return (
                   <form
                     key={order.id}
@@ -191,41 +197,36 @@ export default async function ProductionPage() {
                     <div>
                       <p className="font-medium">{order.orderNumber}</p>
                       <p className="mt-1 text-sm text-slate-600">
-                        {order.customer.name} / RM {order.total.toString()}
+                        {order.customerName} / RM {order.total}
                       </p>
                       <p className="mt-2 text-xs text-slate-500">
-                        {order.items
-                          .map(
-                            (item) =>
-                              `${item.sku.code} x ${item.quantity.toString()}`,
-                          )
-                          .join(", ")}
+                        {items.map((i) => `${i.skuCode} x ${i.quantity}`).join(", ")}
                       </p>
                     </div>
                     <select
                       name="locationId"
                       required
-                      disabled={hasOpenTask}
+                      disabled={order.hasOpenTask}
                       className="self-start rounded-md border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100"
                     >
                       <option value="">Select location</option>
-                      {locations.map((location) => (
-                        <option key={location.id} value={location.id}>
-                          {location.code}
+                      {locations.rows.map((l) => (
+                        <option key={l.id} value={l.id}>
+                          {l.code}
                         </option>
                       ))}
                     </select>
                     <input
                       name="notes"
-                      disabled={hasOpenTask}
+                      disabled={order.hasOpenTask}
                       placeholder="Production notes"
                       className="self-start rounded-md border border-slate-300 px-3 py-2 text-sm disabled:bg-slate-100"
                     />
                     <button
-                      disabled={hasOpenTask}
+                      disabled={order.hasOpenTask}
                       className="self-start rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white disabled:bg-slate-300"
                     >
-                      {hasOpenTask ? "Task Exists" : "Create Tasks"}
+                      {order.hasOpenTask ? "Task Exists" : "Create Tasks"}
                     </button>
                   </form>
                 );
@@ -237,7 +238,7 @@ export default async function ProductionPage() {
 
       <div className="space-y-4">
         <h2 className="text-lg font-semibold">Production Tasks</h2>
-        {tasks.length === 0 ? (
+        {tasks.rows.length === 0 ? (
           <p className="text-sm text-slate-600">No production tasks yet.</p>
         ) : (
           <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -254,51 +255,28 @@ export default async function ProductionPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {tasks.map((task) => (
-                  <tr key={task.id}>
+                {tasks.rows.map((t) => (
+                  <tr key={t.id}>
                     <td className="px-4 py-3">
-                      <p className="font-medium">
-                        {task.createdAt.toLocaleString()}
-                      </p>
-                      <p className="mt-1 text-xs text-slate-500">
-                        {task.notes ?? "-"}
-                      </p>
+                      <p className="font-medium">{t.createdAt.toLocaleString()}</p>
+                      <p className="mt-1 text-xs text-slate-500">{t.notes ?? "-"}</p>
                     </td>
                     <td className="px-4 py-3">
-                      {task.order
-                        ? `${task.order.orderNumber} / ${task.order.customer.name}`
-                        : "Manual"}
+                      {t.orderNumber ? `${t.orderNumber} / ${t.orderCustomerName}` : "Manual"}
                     </td>
-                    <td className="px-4 py-3">{task.location.code}</td>
-                    <td className="px-4 py-3">
-                      {task.sku.code} / {task.sku.name}
-                    </td>
-                    <td className="px-4 py-3">{task.quantity.toString()}</td>
-                    <td className="px-4 py-3">{task.status}</td>
+                    <td className="px-4 py-3">{t.locationCode}</td>
+                    <td className="px-4 py-3">{t.skuCode} / {t.skuName}</td>
+                    <td className="px-4 py-3">{t.quantity}</td>
+                    <td className="px-4 py-3">{t.status}</td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-2">
-                        {task.status === ProductionTaskStatus.pending ? (
-                          <TaskButton
-                            action={startTask}
-                            id={task.id}
-                            label="Start"
-                            primary
-                          />
+                        {t.status === "pending" ? (
+                          <TaskButton action={startTask} id={t.id} label="Start" primary />
                         ) : null}
-                        {task.status === ProductionTaskStatus.pending ||
-                        task.status === ProductionTaskStatus.in_progress ? (
+                        {t.status === "pending" || t.status === "in_progress" ? (
                           <>
-                            <TaskButton
-                              action={completeTask}
-                              id={task.id}
-                              label="Complete"
-                              primary
-                            />
-                            <TaskButton
-                              action={cancelTask}
-                              id={task.id}
-                              label="Cancel"
-                            />
+                            <TaskButton action={completeTask} id={t.id} label="Complete" primary />
+                            <TaskButton action={cancelTask} id={t.id} label="Cancel" />
                           </>
                         ) : null}
                       </div>

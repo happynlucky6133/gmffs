@@ -1,17 +1,12 @@
-import {
-  DeliveryEventType,
-  DeliveryProviderType,
-  DeliveryStatus,
-  FulfillmentStatus,
-} from "@/generated/prisma/client";
+import { randomUUID } from "node:crypto";
 import { money } from "@/lib/form";
-import { prisma } from "@/lib/prisma";
+import { withSqlTransaction } from "@/lib/sql";
 
 type CreateDeliveryInput = {
   companyId: string;
   orderId: string;
   locationId?: string | null;
-  provider: DeliveryProviderType;
+  provider: string;
   quoteAmount?: number | null;
   pickupAddress?: string | null;
   dropoffAddress?: string | null;
@@ -24,77 +19,73 @@ type DeliveryTransitionInput = {
   notes?: string | null;
 };
 
+async function addDeliveryEvent(
+  client: Parameters<Parameters<typeof withSqlTransaction>[0]>[0],
+  companyId: string,
+  deliveryId: string,
+  type: string,
+  notes?: string | null,
+) {
+  await client.query(
+    `INSERT INTO delivery_events (id, "companyId", "deliveryId", type, notes, "createdAt")
+     VALUES ($1, $2, $3, $4, $5, NOW())`,
+    [randomUUID(), companyId, deliveryId, type, notes ?? null],
+  );
+}
+
 export async function createDelivery(input: CreateDeliveryInput) {
-  return prisma.$transaction(async (tx) => {
-    const order = await tx.order.findFirstOrThrow({
-      where: {
-        id: input.orderId,
-        companyId: input.companyId,
-      },
-    });
+  return withSqlTransaction(async (client) => {
+    const order = await client.query(
+      `SELECT id, "deliveryAddress" FROM orders WHERE id = $1 AND "companyId" = $2`,
+      [input.orderId, input.companyId],
+    );
+    if (order.rows.length === 0) throw new Error("Order not found");
 
-    const activeDelivery = await tx.delivery.findFirst({
-      where: {
-        companyId: input.companyId,
-        orderId: order.id,
-        status: {
-          notIn: [DeliveryStatus.cancelled, DeliveryStatus.failed],
-        },
-      },
-    });
-
-    if (activeDelivery) {
-      throw new Error("Order already has an active delivery");
-    }
+    const active = await client.query(
+      `SELECT id FROM deliveries WHERE "companyId" = $1 AND "orderId" = $2
+        AND status NOT IN ('cancelled', 'failed') LIMIT 1`,
+      [input.companyId, input.orderId],
+    );
+    if (active.rows.length > 0) throw new Error("Order already has an active delivery");
 
     if (input.locationId) {
-      await tx.inventoryLocation.findFirstOrThrow({
-        where: {
-          id: input.locationId,
-          companyId: input.companyId,
-          isActive: true,
-        },
-      });
+      const loc = await client.query(
+        `SELECT id FROM inventory_locations WHERE id = $1 AND "companyId" = $2 AND "isActive" = true`,
+        [input.locationId, input.companyId],
+      );
+      if (loc.rows.length === 0) throw new Error("Location not found");
     }
 
-    const quoteAmount = input.quoteAmount ?? null;
-    const status = quoteAmount
-      ? DeliveryStatus.quoted
-      : DeliveryStatus.pending_quote;
+    const status = input.quoteAmount ? "quoted" : "pending_quote";
+    const deliveryId = randomUUID();
 
-    const delivery = await tx.delivery.create({
-      data: {
-        companyId: input.companyId,
-        orderId: order.id,
-        locationId: input.locationId,
-        provider: input.provider,
-        status,
-        quoteAmount: quoteAmount === null ? null : money(quoteAmount),
-        pickupAddress: input.pickupAddress,
-        dropoffAddress: input.dropoffAddress ?? order.deliveryAddress,
-        scheduledAt: input.scheduledAt,
-      },
-    });
-
-    await addDeliveryEvent(
-      tx,
-      input.companyId,
-      delivery.id,
-      quoteAmount ? DeliveryEventType.quoted : DeliveryEventType.webhook_received,
-      quoteAmount ? "Manual quote created" : "Delivery created",
+    await client.query(
+      `INSERT INTO deliveries
+        (id, "companyId", "orderId", "locationId", provider, status,
+         "quoteAmount", "pickupAddress", "dropoffAddress", "scheduledAt",
+         "createdAt", "updatedAt")
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW(), NOW())`,
+      [
+        deliveryId, input.companyId, input.orderId, input.locationId ?? null,
+        input.provider, status,
+        input.quoteAmount ? money(input.quoteAmount) : null,
+        input.pickupAddress ?? null,
+        input.dropoffAddress ?? order.rows[0].deliveryAddress,
+        input.scheduledAt ?? null,
+      ],
     );
 
-    await tx.order.update({
-      where: {
-        id: order.id,
-        companyId: input.companyId,
-      },
-      data: {
-        deliveryStatus: status,
-      },
-    });
+    await addDeliveryEvent(client, input.companyId, deliveryId,
+      input.quoteAmount ? "quoted" : "webhook_received",
+      input.quoteAmount ? "Manual quote created" : "Delivery created");
 
-    return delivery;
+    await client.query(
+      `UPDATE orders SET "deliveryStatus" = $1, "updatedAt" = NOW()
+        WHERE id = $2 AND "companyId" = $3`,
+      [status, input.orderId, input.companyId],
+    );
+
+    return { id: deliveryId, orderId: input.orderId };
   });
 }
 
@@ -104,45 +95,28 @@ export async function quoteDelivery(input: {
   quoteAmount: number;
   notes?: string | null;
 }) {
-  return prisma.$transaction(async (tx) => {
-    await tx.delivery.findFirstOrThrow({
-      where: {
-        id: input.deliveryId,
-        companyId: input.companyId,
-        status: DeliveryStatus.pending_quote,
-      },
-    });
+  return withSqlTransaction(async (client) => {
+    const d = await client.query<{ id: string; "orderId": string }>(
+      `SELECT id, "orderId" FROM deliveries WHERE id = $1 AND "companyId" = $2 AND status = 'pending_quote'`,
+      [input.deliveryId, input.companyId],
+    );
+    if (d.rows.length === 0) throw new Error("Delivery not found or not in pending_quote");
 
-    const delivery = await tx.delivery.update({
-      where: {
-        id: input.deliveryId,
-        companyId: input.companyId,
-      },
-      data: {
-        status: DeliveryStatus.quoted,
-        quoteAmount: money(input.quoteAmount),
-      },
-    });
-
-    await tx.order.update({
-      where: {
-        id: delivery.orderId,
-        companyId: input.companyId,
-      },
-      data: {
-        deliveryStatus: DeliveryStatus.quoted,
-      },
-    });
-
-    await addDeliveryEvent(
-      tx,
-      input.companyId,
-      delivery.id,
-      DeliveryEventType.quoted,
-      input.notes,
+    await client.query(
+      `UPDATE deliveries SET status = 'quoted', "quoteAmount" = $1, "updatedAt" = NOW()
+        WHERE id = $2 AND "companyId" = $3`,
+      [money(input.quoteAmount), input.deliveryId, input.companyId],
     );
 
-    return delivery;
+    await client.query(
+      `UPDATE orders SET "deliveryStatus" = 'quoted', "updatedAt" = NOW()
+        WHERE id = $1 AND "companyId" = $2`,
+      [d.rows[0].orderId, input.companyId],
+    );
+
+    await addDeliveryEvent(client, input.companyId, input.deliveryId, "quoted", input.notes);
+
+    return d.rows[0];
   });
 }
 
@@ -154,169 +128,92 @@ export async function bookDelivery(input: {
   providerRef?: string | null;
   notes?: string | null;
 }) {
-  return prisma.$transaction(async (tx) => {
-    await tx.delivery.findFirstOrThrow({
-      where: {
-        id: input.deliveryId,
-        companyId: input.companyId,
-        status: {
-          in: [DeliveryStatus.pending_quote, DeliveryStatus.quoted],
-        },
-      },
-    });
+  return withSqlTransaction(async (client) => {
+    const d = await client.query<{ id: string; "orderId": string }>(
+      `SELECT id, "orderId" FROM deliveries WHERE id = $1 AND "companyId" = $2
+        AND status IN ('pending_quote', 'quoted')`,
+      [input.deliveryId, input.companyId],
+    );
+    if (d.rows.length === 0) throw new Error("Delivery not found or not bookable");
 
-    const delivery = await tx.delivery.update({
-      where: {
-        id: input.deliveryId,
-        companyId: input.companyId,
-      },
-      data: {
-        status: DeliveryStatus.booked,
-        scheduledAt: input.scheduledAt,
-        trackingNumber: input.trackingNumber,
-        providerRef: input.providerRef,
-      },
-    });
-
-    await tx.order.update({
-      where: {
-        id: delivery.orderId,
-        companyId: input.companyId,
-      },
-      data: {
-        deliveryStatus: DeliveryStatus.booked,
-        fulfillmentStatus: FulfillmentStatus.ready_for_pickup,
-      },
-    });
-
-    await addDeliveryEvent(
-      tx,
-      input.companyId,
-      delivery.id,
-      DeliveryEventType.booked,
-      input.notes,
+    await client.query(
+      `UPDATE deliveries SET status = 'booked', "scheduledAt" = $1,
+              "trackingNumber" = $2, "providerRef" = $3, "updatedAt" = NOW()
+        WHERE id = $4 AND "companyId" = $5`,
+      [input.scheduledAt ?? null, input.trackingNumber ?? null,
+       input.providerRef ?? null, input.deliveryId, input.companyId],
     );
 
-    return delivery;
+    await client.query(
+      `UPDATE orders SET "deliveryStatus" = 'booked',
+              "fulfillmentStatus" = 'ready_for_pickup', "updatedAt" = NOW()
+        WHERE id = $1 AND "companyId" = $2`,
+      [d.rows[0].orderId, input.companyId],
+    );
+
+    await addDeliveryEvent(client, input.companyId, input.deliveryId, "booked", input.notes);
+
+    return d.rows[0];
   });
 }
 
 export async function markDeliveryPickedUp(input: DeliveryTransitionInput) {
-  return updateDeliveryState(input, {
-    allowedStatuses: [DeliveryStatus.booked],
-    deliveryStatus: DeliveryStatus.picked_up,
-    fulfillmentStatus: FulfillmentStatus.handed_over,
-    eventType: DeliveryEventType.picked_up,
-  });
+  return updateDeliveryState(input, ["booked"], "picked_up", "picked_up", "handed_over");
 }
 
 export async function markDeliveryDelivered(input: DeliveryTransitionInput) {
-  return updateDeliveryState(input, {
-    allowedStatuses: [DeliveryStatus.picked_up],
-    deliveryStatus: DeliveryStatus.delivered,
-    fulfillmentStatus: FulfillmentStatus.completed,
-    eventType: DeliveryEventType.delivered,
-    deliveredAt: new Date(),
-  });
+  return updateDeliveryState(input, ["picked_up"], "delivered", "delivered", "completed", new Date());
 }
 
 export async function failDelivery(input: DeliveryTransitionInput) {
-  return updateDeliveryState(input, {
-    allowedStatuses: [
-      DeliveryStatus.pending_quote,
-      DeliveryStatus.quoted,
-      DeliveryStatus.booked,
-      DeliveryStatus.picked_up,
-    ],
-    deliveryStatus: DeliveryStatus.failed,
-    eventType: DeliveryEventType.failed,
-  });
+  return updateDeliveryState(input, ["pending_quote", "quoted", "booked", "picked_up"], "failed", "failed");
 }
 
 export async function cancelDelivery(input: DeliveryTransitionInput) {
-  return updateDeliveryState(input, {
-    allowedStatuses: [
-      DeliveryStatus.pending_quote,
-      DeliveryStatus.quoted,
-      DeliveryStatus.booked,
-    ],
-    deliveryStatus: DeliveryStatus.cancelled,
-    eventType: DeliveryEventType.cancelled,
-  });
+  return updateDeliveryState(input, ["pending_quote", "quoted", "booked"], "cancelled", "cancelled");
 }
 
 async function updateDeliveryState(
   input: DeliveryTransitionInput,
-  next: {
-    allowedStatuses: DeliveryStatus[];
-    deliveryStatus: DeliveryStatus;
-    fulfillmentStatus?: FulfillmentStatus;
-    eventType: DeliveryEventType;
-    deliveredAt?: Date;
-  },
+  allowedStatuses: string[],
+  toStatus: string,
+  eventType: string,
+  fulfillmentStatus?: string,
+  deliveredAt?: Date,
 ) {
-  return prisma.$transaction(async (tx) => {
-    await tx.delivery.findFirstOrThrow({
-      where: {
-        id: input.deliveryId,
-        companyId: input.companyId,
-        status: {
-          in: next.allowedStatuses,
-        },
-      },
-    });
+  return withSqlTransaction(async (client) => {
+    const placeholders = allowedStatuses.map((_, i) => `$${i + 3}`).join(", ");
+    const d = await client.query<{ id: string; "orderId": string }>(
+      `SELECT id, "orderId" FROM deliveries
+        WHERE id = $1 AND "companyId" = $2
+          AND status IN (${placeholders})`,
+      [input.deliveryId, input.companyId, ...allowedStatuses],
+    );
+    if (d.rows.length === 0) throw new Error("Delivery not found or not in expected status");
 
-    const delivery = await tx.delivery.update({
-      where: {
-        id: input.deliveryId,
-        companyId: input.companyId,
-      },
-      data: {
-        status: next.deliveryStatus,
-        deliveredAt: next.deliveredAt,
-      },
-    });
-
-    await tx.order.update({
-      where: {
-        id: delivery.orderId,
-        companyId: input.companyId,
-      },
-      data: {
-        deliveryStatus: next.deliveryStatus,
-        fulfillmentStatus: next.fulfillmentStatus,
-      },
-    });
-
-    await addDeliveryEvent(
-      tx,
-      input.companyId,
-      delivery.id,
-      next.eventType,
-      input.notes,
+    await client.query(
+      `UPDATE deliveries SET status = $1, "deliveredAt" = $2, "updatedAt" = NOW()
+        WHERE id = $3 AND "companyId" = $4`,
+      [toStatus, deliveredAt ?? null, input.deliveryId, input.companyId],
     );
 
-    return delivery;
+    const orderUpdates = [`"deliveryStatus" = $1`];
+    const orderValues: unknown[] = [toStatus];
+
+    if (fulfillmentStatus) {
+      orderUpdates.push(`"fulfillmentStatus" = $2`);
+      orderValues.push(fulfillmentStatus);
+    }
+    orderValues.push(d.rows[0].orderId, input.companyId);
+
+    await client.query(
+      `UPDATE orders SET ${orderUpdates.join(", ")}, "updatedAt" = NOW()
+        WHERE id = $${orderValues.length - 1} AND "companyId" = $${orderValues.length}`,
+      orderValues,
+    );
+
+    await addDeliveryEvent(client, input.companyId, input.deliveryId, eventType, input.notes);
+
+    return d.rows[0];
   });
 }
-
-async function addDeliveryEvent(
-  tx: TransactionClient,
-  companyId: string,
-  deliveryId: string,
-  type: DeliveryEventType,
-  notes?: string | null,
-) {
-  await tx.deliveryEvent.create({
-    data: {
-      companyId,
-      deliveryId,
-      type,
-      notes,
-    },
-  });
-}
-
-type TransactionClient = Parameters<
-  Parameters<typeof prisma.$transaction>[0]
->[0];

@@ -10,47 +10,109 @@ import {
   updateSku,
 } from "./actions";
 import { getActiveCompany } from "@/lib/company";
-import { prisma } from "@/lib/prisma";
+import { sqlQuery } from "@/lib/sql";
 
 export const dynamic = "force-dynamic";
 
+type ProductRow = {
+  id: string;
+  name: string;
+  description: string | null;
+  "imageUrl": string | null;
+  "displayOrder": number;
+  "isActive": boolean;
+};
+
+type SkuRow = {
+  id: string;
+  code: string;
+  name: string;
+  unit: string;
+  price: string;
+  "isActive": boolean;
+  "productName": string;
+};
+
+type LocationRow = {
+  id: string;
+  name: string;
+  code: string;
+  address: string | null;
+  "isActive": boolean;
+};
+
+type BalanceRow = {
+  id: string;
+  "onHand": string;
+  reserved: string;
+  "locationCode": string;
+  "skuCode": string;
+  "skuName": string;
+  "productName": string;
+};
+
+type MovementRow = {
+  id: string;
+  type: string;
+  quantity: string;
+  reason: string | null;
+  "createdAt": Date;
+  "locationCode": string;
+  "skuCode": string;
+};
+
 export default async function InventoryPage() {
   const company = await getActiveCompany();
+
   const [products, skus, locations, balances, movements] = await Promise.all([
-    prisma.product.findMany({
-      where: { companyId: company.id },
-      orderBy: [{ isActive: "desc" }, { name: "asc" }],
-    }),
-    prisma.sku.findMany({
-      where: { companyId: company.id },
-      include: { product: true },
-      orderBy: [{ isActive: "desc" }, { code: "asc" }],
-    }),
-    prisma.inventoryLocation.findMany({
-      where: { companyId: company.id },
-      orderBy: [{ isActive: "desc" }, { code: "asc" }],
-    }),
-    prisma.inventoryBalance.findMany({
-      where: { companyId: company.id },
-      include: {
-        location: true,
-        sku: {
-          include: {
-            product: true,
-          },
-        },
-      },
-      orderBy: [{ location: { code: "asc" } }, { sku: { code: "asc" } }],
-    }),
-    prisma.inventoryMovement.findMany({
-      where: { companyId: company.id },
-      include: {
-        location: true,
-        sku: true,
-      },
-      orderBy: { createdAt: "desc" },
-      take: 10,
-    }),
+    sqlQuery<ProductRow>(
+      `SELECT id, name, description, "imageUrl", "displayOrder", "isActive"
+         FROM products
+        WHERE "companyId" = $1
+        ORDER BY "isActive" DESC, name ASC`,
+      [company.id],
+    ),
+    sqlQuery<SkuRow>(
+      `SELECT s.id, s.code, s.name, s.unit, s.price::text, s."isActive",
+              p.name AS "productName"
+         FROM skus s
+         JOIN products p ON p.id = s."productId"
+        WHERE s."companyId" = $1
+        ORDER BY s."isActive" DESC, s.code ASC`,
+      [company.id],
+    ),
+    sqlQuery<LocationRow>(
+      `SELECT id, name, code, address, "isActive"
+         FROM inventory_locations
+        WHERE "companyId" = $1
+        ORDER BY "isActive" DESC, code ASC`,
+      [company.id],
+    ),
+    sqlQuery<BalanceRow>(
+      `SELECT b.id, b."onHand"::text, b.reserved::text,
+              l.code AS "locationCode",
+              s.code AS "skuCode", s.name AS "skuName",
+              p.name AS "productName"
+         FROM inventory_balances b
+         JOIN inventory_locations l ON l.id = b."locationId"
+         JOIN skus s ON s.id = b."skuId"
+         JOIN products p ON p.id = s."productId"
+        WHERE b."companyId" = $1
+        ORDER BY l.code ASC, s.code ASC`,
+      [company.id],
+    ),
+    sqlQuery<MovementRow>(
+      `SELECT m.id, m.type, m.quantity::text, m.reason, m."createdAt",
+              l.code AS "locationCode",
+              s.code AS "skuCode"
+         FROM inventory_movements m
+         JOIN inventory_locations l ON l.id = m."locationId"
+         JOIN skus s ON s.id = m."skuId"
+        WHERE m."companyId" = $1
+        ORDER BY m."createdAt" DESC
+        LIMIT 10`,
+      [company.id],
+    ),
   ]);
 
   return (
@@ -112,11 +174,11 @@ export default async function InventoryPage() {
                 className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
               >
                 <option value="">Select location</option>
-                {locations
-                  .filter((location) => location.isActive)
-                  .map((location) => (
-                    <option key={location.id} value={location.id}>
-                      {location.code} / {location.name}
+                {locations.rows
+                  .filter((l) => l.isActive)
+                  .map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.code} / {l.name}
                     </option>
                   ))}
               </select>
@@ -129,11 +191,11 @@ export default async function InventoryPage() {
                 className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
               >
                 <option value="">Select SKU</option>
-                {skus
-                  .filter((sku) => sku.isActive)
-                  .map((sku) => (
-                    <option key={sku.id} value={sku.id}>
-                      {sku.code} / {sku.name}
+                {skus.rows
+                  .filter((s) => s.isActive)
+                  .map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.code} / {s.name}
                     </option>
                   ))}
               </select>
@@ -166,33 +228,31 @@ export default async function InventoryPage() {
 
       <div className="space-y-4">
         <h2 className="text-lg font-semibold">Locations</h2>
-        {locations.length === 0 ? (
+        {locations.rows.length === 0 ? (
           <p className="text-sm text-slate-600">No locations yet.</p>
         ) : (
           <div className="grid gap-3">
-            {locations.map((location) => (
+            {locations.rows.map((l) => (
               <form
-                key={location.id}
+                key={l.id}
                 className="grid gap-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:grid-cols-[0.8fr_1fr_1.5fr_auto_auto]"
               >
-                <input type="hidden" name="id" value={location.id} />
-                <span className="self-center text-sm font-medium">
-                  {location.code}
-                </span>
-                <span className="self-center text-sm">{location.name}</span>
+                <input type="hidden" name="id" value={l.id} />
+                <span className="self-center text-sm font-medium">{l.code}</span>
+                <span className="self-center text-sm">{l.name}</span>
                 <span className="self-center text-sm text-slate-600">
-                  {location.address ?? "-"}
+                  {l.address ?? "-"}
                 </span>
                 <span className="self-center text-sm text-slate-600">
-                  {location.isActive ? "Active" : "Disabled"}
+                  {l.isActive ? "Active" : "Disabled"}
                 </span>
                 <button
                   formAction={setLocationActive}
                   name="isActive"
-                  value={location.isActive ? "false" : "true"}
+                  value={l.isActive ? "false" : "true"}
                   className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium"
                 >
-                  {location.isActive ? "Disable" : "Enable"}
+                  {l.isActive ? "Disable" : "Enable"}
                 </button>
               </form>
             ))}
@@ -202,7 +262,7 @@ export default async function InventoryPage() {
 
       <div className="space-y-4">
         <h2 className="text-lg font-semibold">Stock Balances</h2>
-        {balances.length === 0 ? (
+        {balances.rows.length === 0 ? (
           <p className="text-sm text-slate-600">No stock balances yet.</p>
         ) : (
           <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -218,25 +278,17 @@ export default async function InventoryPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {balances.map((balance) => {
-                  const available =
-                    Number(balance.onHand) - Number(balance.reserved);
-
+                {balances.rows.map((b) => {
+                  const available = Number(b.onHand) - Number(b.reserved);
                   return (
-                    <tr key={balance.id}>
-                      <td className="px-4 py-3">{balance.location.code}</td>
-                      <td className="px-4 py-3 font-medium">
-                        {balance.sku.code}
-                      </td>
+                    <tr key={b.id}>
+                      <td className="px-4 py-3">{b.locationCode}</td>
+                      <td className="px-4 py-3 font-medium">{b.skuCode}</td>
                       <td className="px-4 py-3">
-                        {balance.sku.product.name} / {balance.sku.name}
+                        {b.productName} / {b.skuName}
                       </td>
-                      <td className="px-4 py-3">
-                        {balance.onHand.toString()}
-                      </td>
-                      <td className="px-4 py-3">
-                        {balance.reserved.toString()}
-                      </td>
+                      <td className="px-4 py-3">{b.onHand}</td>
+                      <td className="px-4 py-3">{b.reserved}</td>
                       <td className="px-4 py-3">{available.toFixed(3)}</td>
                     </tr>
                   );
@@ -296,9 +348,9 @@ export default async function InventoryPage() {
                 className="mt-1 w-full rounded-md border border-slate-300 px-3 py-2 text-sm"
               >
                 <option value="">Select product</option>
-                {products.map((product) => (
-                  <option key={product.id} value={product.id}>
-                    {product.name}
+                {products.rows.map((p) => (
+                  <option key={p.id} value={p.id}>
+                    {p.name}
                   </option>
                 ))}
               </select>
@@ -348,30 +400,30 @@ export default async function InventoryPage() {
 
       <div className="space-y-4">
         <h2 className="text-lg font-semibold">Products</h2>
-        {products.length === 0 ? (
+        {products.rows.length === 0 ? (
           <p className="text-sm text-slate-600">No products yet.</p>
         ) : (
           <div className="grid gap-3">
-            {products.map((product) => (
+            {products.rows.map((p) => (
               <form
-                key={product.id}
+                key={p.id}
                 action={updateProduct}
                 className="grid gap-3 rounded-lg border border-slate-200 bg-white p-4 shadow-sm md:grid-cols-[1fr_1.3fr_1.3fr_auto_auto]"
               >
-                <input type="hidden" name="id" value={product.id} />
+                <input type="hidden" name="id" value={p.id} />
                 <input
                   name="name"
-                  defaultValue={product.name}
+                  defaultValue={p.name}
                   className="rounded-md border border-slate-300 px-3 py-2 text-sm"
                 />
                 <input
                   name="description"
-                  defaultValue={product.description ?? ""}
+                  defaultValue={p.description ?? ""}
                   className="rounded-md border border-slate-300 px-3 py-2 text-sm"
                 />
                 <input
                   name="imageUrl"
-                  defaultValue={product.imageUrl ?? ""}
+                  defaultValue={p.imageUrl ?? ""}
                   placeholder="/products/fruit1.jpeg"
                   className="rounded-md border border-slate-300 px-3 py-2 text-sm"
                 />
@@ -381,10 +433,10 @@ export default async function InventoryPage() {
                 <button
                   formAction={setProductActive}
                   name="isActive"
-                  value={product.isActive ? "false" : "true"}
+                  value={p.isActive ? "false" : "true"}
                   className="rounded-md border border-slate-300 px-4 py-2 text-sm font-medium"
                 >
-                  {product.isActive ? "Disable" : "Enable"}
+                  {p.isActive ? "Disable" : "Enable"}
                 </button>
               </form>
             ))}
@@ -394,7 +446,7 @@ export default async function InventoryPage() {
 
       <div className="space-y-4">
         <h2 className="text-lg font-semibold">SKUs</h2>
-        {skus.length === 0 ? (
+        {skus.rows.length === 0 ? (
           <p className="text-sm text-slate-600">No SKUs yet.</p>
         ) : (
           <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -411,28 +463,28 @@ export default async function InventoryPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {skus.map((sku) => (
-                  <tr key={sku.id}>
-                    <td className="px-4 py-3">{sku.product.name}</td>
+                {skus.rows.map((s) => (
+                  <tr key={s.id}>
+                    <td className="px-4 py-3">{s.productName}</td>
                     <td className="px-4 py-3" colSpan={6}>
                       <form
                         action={updateSku}
                         className="grid gap-2 md:grid-cols-[1fr_1.5fr_0.8fr_0.8fr_auto_auto_auto]"
                       >
-                        <input type="hidden" name="id" value={sku.id} />
+                        <input type="hidden" name="id" value={s.id} />
                         <input
                           name="code"
-                          defaultValue={sku.code}
+                          defaultValue={s.code}
                           className="rounded-md border border-slate-300 px-3 py-2"
                         />
                         <input
                           name="name"
-                          defaultValue={sku.name}
+                          defaultValue={s.name}
                           className="rounded-md border border-slate-300 px-3 py-2"
                         />
                         <input
                           name="unit"
-                          defaultValue={sku.unit}
+                          defaultValue={s.unit}
                           className="rounded-md border border-slate-300 px-3 py-2"
                         />
                         <input
@@ -440,11 +492,11 @@ export default async function InventoryPage() {
                           type="number"
                           min="0"
                           step="0.01"
-                          defaultValue={sku.price.toString()}
+                          defaultValue={s.price}
                           className="rounded-md border border-slate-300 px-3 py-2"
                         />
                         <span className="self-center text-slate-600">
-                          {sku.isActive ? "Active" : "Disabled"}
+                          {s.isActive ? "Active" : "Disabled"}
                         </span>
                         <button className="rounded-md border border-slate-300 px-3 py-2 font-medium">
                           Save
@@ -452,10 +504,10 @@ export default async function InventoryPage() {
                         <button
                           formAction={setSkuActive}
                           name="isActive"
-                          value={sku.isActive ? "false" : "true"}
+                          value={s.isActive ? "false" : "true"}
                           className="rounded-md border border-slate-300 px-3 py-2 font-medium"
                         >
-                          {sku.isActive ? "Disable" : "Enable"}
+                          {s.isActive ? "Disable" : "Enable"}
                         </button>
                       </form>
                     </td>
@@ -469,7 +521,7 @@ export default async function InventoryPage() {
 
       <div className="space-y-4">
         <h2 className="text-lg font-semibold">Recent Stock Movements</h2>
-        {movements.length === 0 ? (
+        {movements.rows.length === 0 ? (
           <p className="text-sm text-slate-600">No stock movements yet.</p>
         ) : (
           <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
@@ -485,18 +537,16 @@ export default async function InventoryPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-200">
-                {movements.map((movement) => (
-                  <tr key={movement.id}>
+                {movements.rows.map((m) => (
+                  <tr key={m.id}>
                     <td className="px-4 py-3">
-                      {movement.createdAt.toLocaleString()}
+                      {m.createdAt.toLocaleString()}
                     </td>
-                    <td className="px-4 py-3">{movement.type}</td>
-                    <td className="px-4 py-3">{movement.location.code}</td>
-                    <td className="px-4 py-3">{movement.sku.code}</td>
-                    <td className="px-4 py-3">
-                      {movement.quantity.toString()}
-                    </td>
-                    <td className="px-4 py-3">{movement.reason ?? "-"}</td>
+                    <td className="px-4 py-3">{m.type}</td>
+                    <td className="px-4 py-3">{m.locationCode}</td>
+                    <td className="px-4 py-3">{m.skuCode}</td>
+                    <td className="px-4 py-3">{m.quantity}</td>
+                    <td className="px-4 py-3">{m.reason ?? "-"}</td>
                   </tr>
                 ))}
               </tbody>
