@@ -16,13 +16,23 @@ export async function submitPaymentProof(
     throw new Error("Payment screenshot is required");
   }
 
-  const proofUrl = await savePaymentProof(companySlug, proof);
-  await submitCustomerPaymentProof({
-    companySlug,
-    orderNumber,
-    proofUrl,
-    referenceNumber: optionalString(formData, "referenceNumber"),
-  });
+  let proofUrl: string;
+  try {
+    proofUrl = await savePaymentProof(companySlug, proof);
+  } catch (e) {
+    throw new Error(`Upload failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
+
+  try {
+    await submitCustomerPaymentProof({
+      companySlug,
+      orderNumber,
+      proofUrl,
+      referenceNumber: optionalString(formData, "referenceNumber"),
+    });
+  } catch (e) {
+    throw new Error(`Payment record failed: ${e instanceof Error ? e.message : String(e)}`);
+  }
 
   revalidatePath(`/${companySlug}/orders/${orderNumber}`);
   revalidatePath(`/${companySlug}/track`);

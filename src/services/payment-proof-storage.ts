@@ -1,6 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
-import path from "node:path";
 import { getCloudflareContextSafe } from "@/lib/cloudflare";
 
 const maxProofSize = 8 * 1024 * 1024;
@@ -39,7 +37,10 @@ export async function savePaymentProof(companySlug: string, proof: File) {
     return `/payment-proofs/${key}`;
   }
 
-  const uploadDir = path.join(
+  // Fallback to local filesystem (development only)
+  const { mkdir, writeFile } = await import("node:fs/promises");
+  const { default: nodePath } = await import("node:path");
+  const uploadDir = nodePath.join(
     process.cwd(),
     "public",
     "uploads",
@@ -48,7 +49,7 @@ export async function savePaymentProof(companySlug: string, proof: File) {
   );
 
   await mkdir(uploadDir, { recursive: true });
-  await writeFile(path.join(uploadDir, filename), Buffer.from(bytes));
+  await writeFile(nodePath.join(uploadDir, filename), Buffer.from(bytes));
 
   return `/uploads/payment-proofs/${key}`;
 }
